@@ -25,3 +25,6 @@ data/cache/
 
 # reference PDFs live in papers/ — kept local, never committed to GitHub
 *.pdf
+
+# local assistant context — kept local, not committed
+AGENTS.md
