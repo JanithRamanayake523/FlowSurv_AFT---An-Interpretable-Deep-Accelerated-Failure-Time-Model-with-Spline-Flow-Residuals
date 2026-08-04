@@ -1,0 +1,36 @@
+# FlowSurv-AFT — reproducible environment spec (clean-machine route).
+# Usage: conda env create -f environment.yml && conda activate flowsurv
+#
+# NOTE: local development uses the existing `torch_gpu` conda env
+# (python 3.10.20, torch 2.5.1+cu, RTX 4050 Laptop 6GB) with the pip
+# section installed on top; this file is the canonical spec for
+# reproduction on a clean machine (python 3.11 per Implementation Plan Phase 0).
+name: flowsurv
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - pyarrow
+  - matplotlib
+  - scikit-learn
+  - statsmodels
+  - pyyaml
+  - pytest
+  - pip:
+      # core model (Phase 1)
+      - torch>=2.2
+      - zuko>=1.2        # conditional RQS flows
+      - nflows>=0.14     # fallback RQS implementation
+      # baselines + datasets (Phase 3)
+      - pycox>=0.3             # SUPPORT/METABRIC/GBSG/FLCHAIN loaders; DeepSurv/DeepHit/DSM (pulls torchtuples)
+      - scikit-survival>=0.23  # RSF + reference metrics (Uno's C, IBS)
+      - lifelines>=0.29        # Cox PH, Weibull/log-normal AFT
+      # Phase 3 optional — Royston-Parmar via R/flexsurv.
+      # rpy2 is Unix-friendly; on Windows prefer the exported-CSV route (Methodology §7).
+      # - rpy2>=3.5
+      # Phase 3 optional — Ausset-CNF (FFJORD) reimplementation.
+      # - torchdiffeq>=0.2

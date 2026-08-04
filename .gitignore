@@ -1,0 +1,27 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# environments
+.venv/
+
+# experiment outputs (artifacts are archived, not committed; keep dir via .gitkeep)
+experiments/*
+!experiments/.gitkeep
+
+# dataset cache
+*.parquet
+data/cache/
+
+# reference PDFs live in papers/ — kept local, never committed to GitHub
+*.pdf

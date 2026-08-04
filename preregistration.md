@@ -1,0 +1,101 @@
+# FlowSurv-AFT — Pre-Registration
+
+**Version:** prereg-v1 · **Frozen:** 2026-08-04 (Sri Lanka Standard Time, UTC+5:30)
+**Status:** FROZEN. Changes after this date are only permitted as logged entries in the Deviations section (§8); the frozen text itself is not edited.
+
+This document pre-registers the hypotheses, primary contrasts, metrics, tuning budget, and success criteria of the FlowSurv-AFT study, per Implementation Plan Phase 0. It is drawn from Document 1 (§3 hypotheses), Document 2 (§2.4 optimization protocol, §3.3 metrics, §3.4 analysis, §4.3 success criteria), and freezes them before any experiment is run.
+
+---
+
+## 1. Hypotheses
+
+- **H1 (flexibility).** On non-standard hazard shapes (S2 bathtub, S3 multimodal, S4 crossing), FlowSurv-AFT attains lower hazard-recovery error (HRE) than all baselines.
+- **H2 (calibration × censoring).** The calibration advantage of exact-likelihood training over discrete-time/partial-likelihood deep models (DeepHit, DeepSurv) increases with censoring proportion.
+- **H3 (no flexibility penalty).** On standard-shaped (Weibull, S1) data, FlowSurv-AFT matches parametric Weibull AFT within a small non-inferiority margin — flexibility costs nothing where it is not needed.
+- **H4 (interpretability).** FlowSurv-AFT's acceleration factors exp(μ(xₐ) − μ(x_b)) are concordant with classical AFT time ratios on data where the classical model is adequate.
+
+## 2. Primary contrasts (confirmatory)
+
+| ID | Contrast | Metric | Cells | Hypothesis |
+|---|---|---|---|---|
+| C1 | FlowSurv-AFT vs DSM | HRE | S2–S4, all n × censoring × type | H1 |
+| C2 | FlowSurv-AFT vs DeepHit / DeepSurv, trend across censoring % | D-calibration pass rate, ICI | all scenarios, censoring ∈ {0,20,50,80}% | H2 |
+| C3 | FlowSurv-AFT vs Weibull AFT | HRE, IBS | S1 | H3 |
+| C4 | FlowSurv-AFT time ratios vs Weibull-AFT time ratios | concordance correlation coefficient (descriptive) | S1 + real datasets | H4 |
+
+C1–C3 are the confirmatory family; C4 is descriptive (no threshold claim). All other comparisons are secondary/exploratory and Holm-corrected.
+
+## 3. Metrics (complete pre-registered list)
+
+Formulas as in Methodology §3.3. τ = 90th percentile of observed test times.
+
+1. **Discrimination:** Uno's C (IPCW) — the *only* concordance variant reported (anti-C-hacking, Sonabend 2022).
+2. **Overall accuracy:** Integrated Brier Score with IPCW on [0, τ].
+3. **Calibration:** D-calibration (10-bin χ² test; report statistic and pass/fail at α = 0.05; pass rate across replications) and ICI (loess calibration curve at τ, mean absolute deviation).
+4. **Hazard recovery (simulation only, headline):** HRE = mean over test subjects of the weighted L2 error of ĥ(t|x) vs h_true(t|x) on a fixed grid, weights ∝ marginal density of evaluation times.
+5. **Distributional fidelity (simulation only):** KS and W1 between estimated and true conditional CDFs at fixed covariate profiles; quartile-wise signed CDF deviation (bias diagnostic).
+6. **Cost:** wall-clock for fit, evaluation, and 1,000-sample generation per subject.
+
+No other metric may appear in claims; additional descriptive statistics go to the appendix of the paper, labelled exploratory.
+
+## 4. Tuning budget and freezing protocol
+
+- **Budget:** 30 random hyperparameter configurations per DL method per macro-cell, selected on validation NLL (or the package-equivalent objective), identical for every DL method (fairness constraint). Classical methods use package defaults with documented tuning where applicable.
+- **FlowSurv-AFT grid:** K ∈ {1,2,3} RQS blocks × bins ∈ {8,16} × hidden ∈ {64,128} × dropout ∈ {0.1, 0.2}.
+- **Freeze-then-audit:** within each macro-cell, hyperparameters are tuned on replications 1–5 and frozen for replications 6–100. Full nested tuning on a random 10% of cells serves as the audit; freezing bias is reported.
+- **Optimizer (FlowSurv-AFT):** AdamW, lr 1e-3, cosine decay to 1e-5, weight decay 1e-4; batch 256; ≤ 500 epochs; early stopping on validation NLL, patience 30; gradient clip 1.0. Spline domain [−4, 4] with identity tails; L2 penalty 1e-5 on spline derivatives. Soft-NA Wasserstein regularizer λ = 0 (primary); λ ∈ {0.1, 0.2, 0.5} ablated.
+- **Splits:** simulation — train/val/test 70/15/15 within each replication; real data — 10 repeated 80/20 stratified splits with 15% inner validation.
+- **Seeds:** master seed `20260804`; per-(cell, replication) seeds derived deterministically; common random seeds across methods within a replication.
+
+## 5. Analysis plan
+
+- **Per cell:** median metric over R = 100 replications with 10,000-replicate bootstrap percentile CIs.
+- **Across cells:** linear mixed-effects model per metric — fixed effects method × scenario × n × censoring % × censoring type plus two-way method × design-factor interactions; random intercept for replication batch.
+- **Multiplicity:** C1–C3 confirmatory as stated; all other p-values Holm-corrected; effect sizes with CIs reported throughout (no p-value fishing).
+- **Real data:** median [IQR] across the 10 splits per dataset; paired Wilcoxon signed-rank across splits with Holm correction.
+- **Failures:** non-convergence/NaN rates per (method, cell) are logged and reported as a finding, not silently averaged over.
+
+## 6. Success criteria (real data, Methodology §4.3)
+
+Real-data claims are restricted to calibration/distributional quality (per Burk et al. 2024):
+
+1. D-calibration pass rate ≥ discriminative DL baselines, especially on FLCHAIN (heavy censoring).
+2. ICI and IBS **non-inferior** to the best baseline on every dataset — margins fixed here: Δ_IBS = 0.01 and Δ_ICI = 0.02 (absolute).
+3. No concordance-superiority claim is made unless it materializes; if it does, it is reported as a secondary finding.
+
+## 7. Pre-experiment gate
+
+No experiment may run before all six implementation gate tests pass (Methodology §6): Weibull recovery; change-of-variables audit; inverse audit; censoring-likelihood gradient audit; quantile/sampling KS audit; D-calibration sanity. The tests live in `tests/` and run in CI.
+
+## 8. Deviations log
+
+*Empty at freeze (2026-08-04).*
+
+---
+
+## Appendix A — Final novelty sweep (2026-08-04)
+
+Pre-freeze verification that the gap claimed in Document 1 §2.7 (the "empty cell") is still open. Sources: arXiv API (full-text search over title/abstract), attempted OpenReview API and Semantic Scholar API.
+
+| Query | Hits | Findings relevant to novelty |
+|---|---|---|
+| arXiv: "normalizing flow" AND "survival analysis", by date | 2 | Ausset et al. 2021 (known, differentiated); Yin et al. 2025 (arXiv:2510.21829) — flow for cross-modal alignment in multimodal WSI survival, not an event-time flow model |
+| arXiv: "spline flow" AND "survival" | **0** | — |
+| arXiv: "neural spline flow" AND "survival" | **0** | — |
+| arXiv: "survival" AND "flow" AND "censoring" | 4 | Ausset 2021; **LT-ICL** (arXiv:2607.18530, 2026-07) — conditional normalizing-flow head for right-censored supply-chain lead-time forecasting with in-context learning: adjacent concurrent item, but no AFT decomposition, no spline flow, CRPS evaluation, industrial domain → monitor, no threat to D1–D3; Eguchi 2026 (book, flow matching for statistical inference, includes survival chapters — cite as context); one insurance discrete-time paper (irrelevant) |
+| arXiv: "accelerated failure time" AND "deep", by date | 8 | **GRAFT** (arXiv:2602.07884, 2026-02) — gated residual AFT, C-index-aligned rank loss + post-hoc calibration: new member of the likelihood-free deep-AFT camp (Doc 1 §2.4); add to related work at writing stage, no threat to the conjunction; DART (ECAI 2023) Gehan-rank AFT; remainder known/already cited |
+| arXiv: "survival" AND "monotonic" AND "flow" | 7 | all irrelevant (physics/fluid-dynamics usage of "flow"/"survival") |
+| arXiv: "survival" AND "spline" AND "neural" | 6 | Yuan et al. 2025 (arXiv:2503.19763, interval-censored partially-linear transformation model, monotone-spline sieve MLE + DNN — transformation-model camp already cited via DRIFT/deeptrafo); CENNSurv 2025 (exposure-lag modeling); Gregorio et al. 2023 (Royston–Parmar-style spline NN for treatment effects); deeptrafo (already cited) |
+| OpenReview API (ICLR 2026 accepted list; STAI-X #101 / Li & Cai status) | n/a | **Not accessible** from the development environment (JS-rendered responses) → open item, see below |
+| Semantic Scholar API | n/a | HTTP 429 (rate-limited); arXiv coverage judged sufficient for freeze |
+
+**Conclusion.** As of 2026-08-04, arXiv contains **no** spline-flow survival model, **no** normalizing-flow AFT model, and no new exact-likelihood flow competitor beyond the already-differentiated Ausset et al. (2021) and Li & Cai (2026, concurrent). The empty-cell conjunction (bidirectional exactness + AFT interpretability + exact censored likelihood + censoring-regime study) remains open. **No design adjustment required.**
+
+**Open items (carried to the Week-21 final priority sweep):** (i) manual OpenReview check of the ICLR 2026 accepted list and of Li & Cai's STAI-X status; (ii) monitor LT-ICL and GRAFT for journal versions; (iii) verify Lifetime Data Analysis quartile before submission.
+
+## Appendix B — Environment at freeze
+
+- Local dev env: conda `torch_gpu` — Python 3.10.20, torch 2.5.1 (CUDA, RTX 4050 Laptop 6 GB), zuko 1.6.0, pytest 9.1.1, pyarrow 25.0.0, pandas 2.3.3, numpy 2.0.1, scipy 1.15.3, scikit-learn 1.6.1, statsmodels 0.14.6.
+- Clean-machine spec: `environment.yml` (Python 3.11 + full dependency set).
+- Known gaps to be installed before their phases: `lifelines`, `scikit-survival`, `pycox` (Phase 3); `rpy2`/R-`flexsurv` (Phase 3, exported-CSV route on Windows); `torchdiffeq` (optional Ausset-CNF).
+- Hardware note: local GPU has 6 GB VRAM (plan assumes ≥ 12 GB). MLP batch-256 fits at n ≤ 5000 are small and expected to fit; if OOM or throughput problems arise, the plan's CPU-fallback rule applies (trim tuning to 15 configs) and is logged in §8.
