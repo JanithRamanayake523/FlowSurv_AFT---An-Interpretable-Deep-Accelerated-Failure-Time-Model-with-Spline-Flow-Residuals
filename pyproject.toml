@@ -9,6 +9,7 @@ description = "FlowSurv-AFT: an interpretable deep accelerated failure time mode
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
+    "scipy",
     "pandas",
     "pyarrow",
     "pyyaml",
