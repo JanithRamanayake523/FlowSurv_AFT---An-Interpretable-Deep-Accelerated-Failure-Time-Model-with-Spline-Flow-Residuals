@@ -1,0 +1,4 @@
+dataset: flchain
+n_splits: 10
+seed: 20260804
+description: FLCHAIN serum free-light-chain assay (n ≈ 7,874, censoring ≈ 72%)

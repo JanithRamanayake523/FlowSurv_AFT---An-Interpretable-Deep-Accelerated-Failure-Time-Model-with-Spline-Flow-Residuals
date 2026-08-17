@@ -1,0 +1,4 @@
+dataset: support
+n_splits: 10
+seed: 20260804
+description: SUPPORT (n ≈ 8,873, censoring ≈ 32%)

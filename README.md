@@ -21,15 +21,26 @@ Claims are made on **calibration and hazard recovery, not concordance** (Burk et
 
 ## Status
 
-**Phase 0 complete** (environment, novelty sweep, pre-registration, repo skeleton + CI). Next: Phase 1 — core model (`src/flowsurv/models/`) and the six gate tests (Methodology §6), all of which must pass before any experiment.
+**Implementation complete through Phase 4.**
+
+- Core model (`FlowSurvAFT` / `FlowSurvGauss`) and all six gate tests are green.
+- Simulation framework (S1–S6 DGPs, 120-cell grid, Type I/III censoring) is implemented.
+- All pre-registered baselines are wired through the common `SurvivalMethod` interface.
+- Metrics (Uno’s C, IBS, D-calibration/ICI, hazard recovery, cost) are implemented and tested.
+- Tuning harness, grid driver, and real-data loaders are in place.
+
+Next: Phase 5 pilot study and Phase 6/7 full simulation/real-data runs.
 
 ## Setup
 
 Two routes:
 
 - **Clean machine (canonical spec):** `conda env create -f environment.yml && conda activate flowsurv`
-- **Existing env (local dev):** the project is developed in the `torch_gpu` conda env (Python 3.10, torch 2.5.1+CUDA); install missing pieces with
-  `pip install -e . pytest` (plus `pycox scikit-survival lifelines` from Phase 3 onward).
+- **Existing env (local dev):** the project is developed in the `torch_gpu` conda env (Python 3.10, torch 2.5.1+CUDA); install with
+  ```bash
+  pip install -e .
+  pip install pytest pycox scikit-survival lifelines
+  ```
 
 ## Tests
 
@@ -37,7 +48,17 @@ Two routes:
 pytest -q
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same on every push. The six pre-experiment gate tests (Methodology §6) land in `tests/` during Phase 1 and gate all experiments.
+CI (`.github/workflows/ci.yml`) runs the same on every push. The six pre-experiment gate tests (Methodology §6) must pass before any experiment is run.
+
+## Generating simulation configs
+
+The 120 simulation-cell YAMLs under `configs/sim/` are generated, not hand-written:
+
+```bash
+python -c "from flowsurv.data.cells import write_default_configs; write_default_configs()"
+```
+
+Real-dataset stubs live in `configs/real/`.
 
 ## Repository layout
 

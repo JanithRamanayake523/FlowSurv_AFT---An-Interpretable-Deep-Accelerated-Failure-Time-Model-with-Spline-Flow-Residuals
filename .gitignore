@@ -22,9 +22,31 @@ experiments/*
 # dataset cache
 *.parquet
 data/cache/
+data/external/
 
 # reference PDFs live in papers/ — kept local, never committed to GitHub
 *.pdf
+
+# pycox early-stopping weight checkpoints (written to cwd during DeepHit/DeepSurv fits)
+weight_checkpoint_*.pt
+
+# auto-generated simulation cell configs (regenerate with write_default_configs)
+configs/sim/*.yaml
+!configs/sim/.gitkeep
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# secrets / local env
+.env
+.env.local
+
+# downloaded or serialized data artifacts
+*.h5
+*.pkl
+*.ckpt
 
 # local assistant context — kept local, not committed
 AGENTS.md

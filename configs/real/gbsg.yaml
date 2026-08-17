@@ -1,0 +1,4 @@
+dataset: gbsg
+n_splits: 10
+seed: 20260804
+description: GBSG / Rotterdam-GBSG (n ≈ 2,232, censoring ≈ 43%)

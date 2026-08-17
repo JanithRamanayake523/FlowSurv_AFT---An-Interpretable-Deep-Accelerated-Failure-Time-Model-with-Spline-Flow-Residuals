@@ -1,7 +1,8 @@
-"""Model components: encoder, conditional RQS flow, FlowSurvAFT, losses (Phase 1)."""
+"""Model components: encoder, conditional RQS flow, FlowSurvAFT, FlowSurvGauss, losses (Phase 1/3)."""
 
 from .encoder import FlowSurvEncoder, ResidualBlock
 from .flowsurv import FlowSurvAFT
+from .flowsurv_gauss import FlowSurvGauss
 from .losses import (
     interval_censored_nll,
     nelson_aalen,
@@ -16,6 +17,7 @@ __all__ = [
     "ConditionalRQSFlow",
     "FlowSurvAFT",
     "FlowSurvEncoder",
+    "FlowSurvGauss",
     "ResidualBlock",
     "TrainConfig",
     "TrainResult",

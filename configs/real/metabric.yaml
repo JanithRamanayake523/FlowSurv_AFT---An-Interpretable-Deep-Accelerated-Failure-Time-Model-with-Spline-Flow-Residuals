@@ -1,0 +1,4 @@
+dataset: metabric
+n_splits: 10
+seed: 20260804
+description: METABRIC (n ≈ 1,904, censoring ≈ 42%)

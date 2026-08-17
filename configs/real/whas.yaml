@@ -1,0 +1,4 @@
+dataset: whas
+n_splits: 10
+seed: 20260804
+description: Worcester Heart Attack Study (n = 1,638, censoring ≈ 57%)

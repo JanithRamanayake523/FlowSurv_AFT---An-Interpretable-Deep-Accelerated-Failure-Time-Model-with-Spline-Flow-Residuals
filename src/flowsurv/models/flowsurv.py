@@ -63,10 +63,37 @@ class FlowSurvAFT(nn.Module):
     # internal helpers
 
     def _forward_base(self, t: Tensor, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """(z = g(u(t)), log|g'(u(t))|, log t, sigma) for times ``t`` given ``x``."""
-        mu, sigma, params = self.encoder(x)
+        """(z = g(u(t)), log|g'(u(t))|, log t, sigma) for times ``t`` given ``x``.
+
+        - Paired: ``t`` has the same leading shape as ``x.shape[:-1]`` (e.g.
+          ``t`` (n,) and ``x`` (n, p), or ``t`` (Q, n) and ``x`` (Q, n, p));
+          returns tensors of the same leading shape.
+        - Grid: ``t`` (m,) and ``x`` (n, p) returns (m, n) matrices.
+        """
+        x = torch.as_tensor(x)
+        orig_shape = x.shape[:-1]
+        p = x.shape[-1]
+        x_flat = x.reshape(-1, p)
+        mu, sigma, params = self.encoder(x_flat)
         log_t = t.to(mu.dtype).clamp_min(torch.finfo(mu.dtype).tiny).log()
-        u = (log_t - mu) / sigma
+        if log_t.dim() == 0:
+            log_t = log_t.unsqueeze(0)
+
+        paired = x.dim() != 2 or (log_t.dim() == 1 and log_t.numel() == mu.numel())
+        if paired:
+            t_flat = log_t.reshape(mu.shape)
+            u = (t_flat - mu) / sigma
+            z, ladj = self.flow.forward(u, params)
+            return z.reshape(orig_shape), ladj.reshape(orig_shape), t_flat.reshape(orig_shape), sigma.reshape(orig_shape)
+
+        # grid case: t (m,) x subjects (n, p) -> (m, n)
+        log_t = log_t.unsqueeze(-1)  # (m, 1)
+        mu = mu.unsqueeze(0)
+        sigma = sigma.unsqueeze(0)
+        u = (log_t - mu) / sigma  # (m, n)
+        # expand per-subject spline parameters to match the (m, n) grid
+        if params.dim() == 2:
+            params = params.unsqueeze(0).expand(u.shape[0], -1, -1)
         z, ladj = self.flow.forward(u, params)
         return z, ladj, log_t, sigma
 
@@ -111,11 +138,32 @@ class FlowSurvAFT(nn.Module):
         return (self.log_density(t, x) - self.log_survival(t, x)).exp()
 
     def quantile(self, q: Tensor | float, x: Tensor) -> Tensor:
-        """Q(q|x) = exp(mu + sigma * g^{-1}(logit(q))). q broadcastable to x's batch."""
-        mu, sigma, params = self.encoder(x)
-        q = torch.as_tensor(q, dtype=mu.dtype, device=mu.device)
-        z_q = torch.logit(q.clamp(1e-6, 1 - 1e-6))
-        return torch.exp(mu + sigma * self.flow.inverse(z_q, params))
+        """Q(q|x) = exp(mu + sigma * g^{-1}(logit(q))).
+
+        ``q`` is a (Q,) tensor of quantile levels; ``x`` can be (n, p) or a
+        batched shape (B1, ..., Bk, p). The leading dimension of ``q`` is
+        broadcast across the first batch dimension of ``x``; all remaining
+        ``x`` dimensions are profile dimensions. The returned tensor has shape
+        (Q, *x.shape[1:-1]) when ``x`` has more than two dimensions, and
+        (Q, n) when ``x`` is (n, p).
+        """
+        x = torch.as_tensor(x)
+        p = x.shape[-1]
+        x_flat = x.reshape(-1, p)
+        mu, sigma, params = self.encoder(x_flat)
+        q = torch.as_tensor(q, dtype=mu.dtype, device=mu.device).flatten()
+        L = q.numel()
+        B = mu.numel()
+        if B % L != 0:
+            raise ValueError(f"quantile levels {L} do not divide covariate batch {B}")
+        N = B // L
+        mu = mu.reshape(L, N)
+        sigma = sigma.reshape(L, N)
+        params = params.reshape(L, N, -1)
+        z_q = torch.logit(q.clamp(1e-6, 1 - 1e-6)).unsqueeze(1).expand(-1, N)
+        eps = self.flow.inverse(z_q, params)
+        out = torch.exp(mu + sigma * eps)
+        return out
 
     def sample(self, x: Tensor, n: int = 1, generator: torch.Generator | None = None) -> Tensor:
         """One-pass samples t = exp(mu + sigma * g^{-1}(z)), z ~ Logistic(0, 1).
@@ -133,10 +181,14 @@ class FlowSurvAFT(nn.Module):
 
     def predict_risk(self, x: Tensor) -> Tensor:
         """Concordance risk score: negative median lifetime -Q(0.5|x) (higher = riskier)."""
-        return -self.quantile(0.5, x)
+        return -self.quantile(0.5, x).squeeze(0)
 
     def forward(self, t: Tensor, d: Tensor, x: Tensor) -> Tensor:
         """Per-observation right-censored log-likelihood contribution."""
         log_f = self.log_density(t, x)
         log_s = self.log_survival(t, x)
+        if log_f.dim() == 2:
+            log_f = torch.diagonal(log_f)
+        if log_s.dim() == 2:
+            log_s = torch.diagonal(log_s)
         return d * log_f + (1 - d) * log_s

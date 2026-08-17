@@ -40,6 +40,6 @@ def s1_frozen_fit(s1_large):
 def s1_full_fit(s1_large):
     """Full FlowSurv-AFT (linear encoder + free spline flow)."""
     t, x = s1_large
-    model = FlowSurvAFT(10, n_blocks=0)
+    model = FlowSurvAFT(10, n_blocks=0, bound=8.0, bins=16)
     fit(model, t, torch.ones_like(t), x, FIT_CONFIG)
     return model
