@@ -269,10 +269,17 @@ class RandomSurvivalForest(SurvivalMethod):
             raise RuntimeError("RSF has not been fit successfully")
         t_np, _, x_np = to_numpy(t, torch.zeros_like(t), x)
         times = np.sort(np.unique(t_np))
-        funcs = self.model.predict_survival_function(x_np)
+        funcs = list(self.model.predict_survival_function(x_np))
         # funcs is iterable of 1-D step functions; evaluate at times and orient
         # as (n_times, n_subjects). np.atleast_1d keeps the time axis when m==1.
-        surv = np.stack([np.atleast_1d(fn(times)) for fn in funcs], axis=0).T
+        # Each StepFunction's domain is fixed by the fitted (training) event
+        # times, so query times past it (e.g. the eval grid's tau, or a test
+        # subject's observed time, when they exceed the largest training
+        # time) raise ValueError; clip to the domain -- survival is flat
+        # beyond the last observed event, which is what clipping gives.
+        lo, hi = funcs[0].domain
+        times_eval = np.clip(times, lo, hi)
+        surv = np.stack([np.atleast_1d(fn(times_eval)) for fn in funcs], axis=0).T
         return times, surv, t_np
 
     def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:

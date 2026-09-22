@@ -347,5 +347,8 @@ class DeepHit(SurvivalMethod):
         grid = np.linspace(1e-3, 10.0, 200)
         surv_df = self.interpolator.predict_surv_df(x_np)
         surv = interp_surv(surv_df.index.to_numpy(), surv_df.to_numpy(), grid)
-        medians = np.array([grid[np.searchsorted(1.0 - s, 0.5)] for s in surv.T])
+        # searchsorted returns len(grid) when survival never drops to 0.5 within
+        # the grid (long survivors); clip so the median falls back to grid.max().
+        idx = [np.clip(np.searchsorted(1.0 - s, 0.5), 0, len(grid) - 1) for s in surv.T]
+        medians = grid[idx]
         return as_output(-medians)

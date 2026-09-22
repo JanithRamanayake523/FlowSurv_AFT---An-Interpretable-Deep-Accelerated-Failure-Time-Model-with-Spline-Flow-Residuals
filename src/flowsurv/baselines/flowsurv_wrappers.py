@@ -66,7 +66,20 @@ class _FlowSurvWrapper(SurvivalMethod):
             # early stopping already uses a validation split; ignore external val
             pass
         start = time.perf_counter()
-        res = fit(self.model, t, d, x, config)
+        try:
+            res = fit(self.model, t, d, x, config)
+        except RuntimeError as e:
+            # Some CUDA installs are missing the NVRTC JIT component that
+            # torch.special.{erfc,erfinv,log_ndtr} compile through (needed by
+            # FlowSurv-Gauss; FlowSurv-AFT's Logistic base never hits this
+            # path). erf/ndtr have native CUDA kernels and are unaffected.
+            # Retry once on CPU rather than failing the whole fit.
+            if "nvrtc" in str(e).lower() and config.device != "cpu":
+                config = TrainConfig(**{**config.__dict__, "device": "cpu"})
+                self.model = self._make_model(int(x.shape[1]), **hyper)
+                res = fit(self.model, t, d, x, config)
+            else:
+                raise
         info = {
             "train_nll": res.train_nll[-1] if res.train_nll else float("nan"),
             "best_val_nll": res.best_val_nll,
