@@ -1,0 +1,1381 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,citecolor=blue,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage[round,authoryear]{natbib}
+\usepackage{times}
+\usepackage{xcolor}
+
+\newcommand{\eps}{\varepsilon}
+\newcommand{\Real}{\mathbb{R}}
+
+% Simple, dependency-free callout blocks: an indented quote with a bold
+% running head and a vertical rule down the left margin, built only from
+% core LaTeX primitives so the document does not depend on a fragile
+% framing-package chain.
+\newenvironment{intuition}
+  {\par\addvspace{8pt}\begin{quote}\noindent\textbf{\textcolor{blue!40!black}{Intuition.}}\ }
+  {\end{quote}\par\addvspace{8pt}}
+
+\newenvironment{worked}
+  {\par\addvspace{8pt}\begin{quote}\noindent\textbf{\textcolor{black!50!white}{Worked example.}}\ }
+  {\end{quote}\par\addvspace{8pt}}
+
+\title{A Plain-Language, Technical Guide to FlowSurv-AFT:\\
+What This Research Does, What Came Before It, and Why It Is Different}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document is written for a reader who already understands statistics,
+machine learning, and deep learning in general, but who has never worked
+with \emph{survival analysis} specifically. It builds up the subject from
+first principles -- what survival data looks like, why it cannot be
+handled by ordinary regression, and what mathematical objects (the
+survival function, the hazard function, the censored likelihood) the
+field uses instead -- and then walks, in order, through every major family
+of survival model that has been proposed, explaining in plain language
+\emph{how each one works mechanically}, not just what it is called. With
+that foundation in place, it explains this research's method,
+\emph{FlowSurv-AFT}, in full mathematical detail, and finally explains
+precisely why it differs from every prior approach, including the two
+closest competing methods. There is no page limit on this document and no
+attempt to compress the explanation; the goal is that a careful reader
+finishes it able to explain the whole research programme to someone else.
+\end{abstract}
+
+\tableofcontents
+
+\newpage
+
+\section{Why survival analysis needs its own toolkit}
+\label{sec:why}
+
+Suppose you want to predict how long a patient will live after a cancer
+diagnosis, how long a machine part will run before it breaks, or how long
+a customer will stay subscribed to a service before cancelling. At first
+glance this looks like an ordinary regression problem: you have a
+continuous outcome (a time) and some covariates (patient age, tumour
+size; machine load, material batch; customer usage pattern), so why not
+just fit a neural network or a linear model to predict the time directly?
+
+The reason is a single, unavoidable fact about how this kind of data is
+collected: \textbf{the study ends before every subject's event has
+happened.} If you follow 1{,}000 patients for five years, some of them
+will die during the study -- for those, you know the exact time. But many
+will still be alive when the study ends, and some will drop out partway
+through for unrelated reasons (they moved away, they withdrew consent).
+For all of those subjects, you do \emph{not} know their true survival
+time. All you know is a \emph{lower bound}: "this patient was alive for
+at least 3.2 years." This phenomenon is called \textbf{censoring}, and it
+is the single fact that makes survival analysis a distinct field rather
+than a special case of regression.
+
+\begin{intuition}
+If you simply threw away everyone who was still alive at the end of the
+study and fit a regression model only to the patients who died, you would
+get a badly biased answer: you would be systematically excluding your
+\emph{longest}-surviving patients, so your model would think everyone
+dies sooner than they really do. If instead you treated "study ended at
+5 years, patient still alive" as though it meant "patient's survival time
+is exactly 5 years," you would also be wrong, in the opposite direction --
+you would be throwing away the information that this patient survived
+\emph{at least} 5 years and might have survived much longer. Survival
+analysis exists to use exactly the right amount of information contained
+in a censored observation -- no more, no less.
+\end{intuition}
+
+This single complication -- that some outcomes are only partially
+observed -- forces every survival model to be built around a specific
+mathematical machinery (Section~\ref{sec:math}) that ordinary regression
+and classification models do not need. Once you understand that
+machinery, every model discussed in this document, including this
+research's own model, is a variation on the same underlying idea: specify
+a probability distribution for the event time, and fit it in a way that
+correctly uses both the fully-observed event times \emph{and} the
+partially-observed censored ones.
+
+\subsection{Types of censoring}
+\label{sec:censoring-types}
+
+There is more than one way an observation can be incomplete, and the type
+matters for how the data should be modelled.
+
+\begin{itemize}
+  \item \textbf{Right censoring} is the case described above: we know the
+    subject survived at least until some time $C$, but not what happened
+    after. This is overwhelmingly the most common case in practice (a
+    study ends; a patient is lost to follow-up) and is the primary focus
+    of this research. Right censoring itself comes in a few flavours that
+    matter for how it is generated in a simulation study:
+    \begin{itemize}
+      \item \emph{Type~I censoring}: every subject has the \emph{same}
+        fixed censoring time (e.g., "the study runs for exactly 5
+        years, and everyone who hasn't had the event by then is
+        censored at 5 years").
+      \item \emph{Type~III (random) censoring}: each subject has their
+        \emph{own}, independently drawn censoring time (e.g., people
+        enrol in the study at different calendar dates, or drop out for
+        unrelated personal reasons at random times).
+    \end{itemize}
+  \item \textbf{Left censoring} is the mirror case: we know the event
+    happened \emph{before} some observed time, but not exactly when
+    (e.g., a screening test detects a disease that could have started
+    at any point before the test date).
+  \item \textbf{Interval censoring} is when we only know the event
+    happened somewhere between two observation times (e.g., a patient is
+    disease-free at one check-up and has the disease at the next, but the
+    exact onset time in between is unknown).
+\end{itemize}
+
+This research's primary setting is right censoring, under both Type~I and
+Type~III mechanisms, with interval censoring treated as a secondary
+experiment. A further, harder complication -- \emph{dependent} or
+\emph{informative} censoring, where the reason a subject is censored is
+itself related to their unobserved event time (e.g., patients who are
+about to die are more likely to drop out of a study) -- is explicitly
+\emph{not} addressed by this research; it is a separate, harder problem
+addressed by other work \citep{gharari2023copula}, and every model
+discussed in this document, including FlowSurv-AFT, assumes censoring is
+independent of the event time given the covariates.
+
+\section{The mathematical language of survival analysis}
+\label{sec:math}
+
+This section introduces the handful of mathematical objects that every
+survival model, from the oldest (1950s actuarial tables) to the newest
+(this research's own deep flow model), is built out of. If you already
+know what a survival function and a hazard function are and how they
+relate, you can skim this section; if not, read it carefully, because
+every later section assumes it.
+
+\subsection{The random variable, and three equivalent ways to describe its distribution}
+
+Let $T$ be the (true, possibly unobserved) time until the event of
+interest, a non-negative continuous random variable. As with any
+continuous random variable, $T$ has a cumulative distribution function
+$F(t) = \Pr(T \le t)$ and a probability density function $f(t) =
+F'(t)$. Survival analysis, however, almost always works with the
+\emph{complement} of $F$, called the \textbf{survival function}:
+\begin{equation}
+  S(t) \;=\; \Pr(T > t) \;=\; 1 - F(t).
+  \label{eq:survival-def}
+\end{equation}
+$S(t)$ answers the question "what fraction of the population is still
+event-free after time $t$?" -- it starts at $S(0) = 1$ (everyone is
+event-free at time zero) and decreases monotonically toward $0$ as $t \to
+\infty$ (eventually, everyone experiences the event, assuming $T$ is not
+defective). A survival curve that stays close to 1 for a long time and
+then drops describes a population where the event is rare until some
+point and then common; a survival curve that decays smoothly and slowly
+describes constant risk over time.
+
+The third, and for this research the most important, way to describe the
+distribution of $T$ is the \textbf{hazard function}:
+\begin{equation}
+  h(t) \;=\; \lim_{\Delta t \to 0} \frac{\Pr(t \le T < t + \Delta t \mid T \ge t)}{\Delta t}.
+  \label{eq:hazard-def}
+\end{equation}
+This is an \emph{instantaneous rate}: given that a subject has survived
+up to time $t$, $h(t)$ is (informally) the rate at which the event is
+about to happen right now, per unit time. It is not a probability -- it
+can exceed 1 -- and it is best read as "risk per unit time, right now,
+conditional on having made it this far."
+
+\begin{intuition}
+The hazard function is the single most informative object in survival
+analysis because it is the one most directly tied to the physical or
+biological \emph{mechanism} generating the data. A rising hazard means
+the risk of the event is accelerating over time (wear-out, ageing); a
+falling hazard means early survivors are increasingly "safe" (infant
+mortality, burn-in failures); a hazard that falls and then rises again
+-- a \textbf{bathtub} shape -- describes a population with high early
+risk (surgical complications, manufacturing defects), a stable middle
+period, and rising late risk (ageing, material fatigue); a hazard with
+more than one bump (\textbf{multimodal}) describes a population that is
+secretly a mixture of sub-groups with different risk timelines pooled
+under one label. Every model discussed in this document should be judged,
+first, by which of these shapes it is even \emph{capable} of representing
+-- a question about the model's functional form, separate from how much
+data is available to fit it.
+\end{intuition}
+
+\subsection{How the three objects relate to each other}
+
+$f$, $S$, and $h$ are not independent choices -- any one of them
+determines the other two. First, by definition, $f(t) = -S'(t)$ (the
+density is minus the rate of decay of the survival curve). Second, a short
+derivation from Eq.~\eqref{eq:hazard-def} gives the hazard directly in
+terms of $f$ and $S$:
+\begin{equation}
+  h(t) \;=\; \frac{f(t)}{S(t)}.
+  \label{eq:hazard-ratio}
+\end{equation}
+This says exactly what the intuition box above suggested: the hazard is
+the density of "the event happens right now" \emph{rescaled} by the
+probability of still being at risk at all. Finally, integrating
+Eq.~\eqref{eq:hazard-ratio} (using $f = -S'$) gives the single most
+useful identity in the whole field, connecting the hazard to the survival
+function directly:
+\begin{equation}
+  S(t) \;=\; \exp\!\left(-\int_0^t h(u)\,du\right) \;=\; \exp\bigl(-H(t)\bigr),
+  \qquad H(t) := \int_0^t h(u)\,du,
+  \label{eq:survival-from-hazard}
+\end{equation}
+where $H(t)$ is called the \textbf{cumulative hazard}. Every survival
+model, no matter how it is parameterized, is implicitly (or explicitly)
+choosing a functional form for one of $\{f, S, h, H\}$ and deriving the
+other three from Eqs.~\eqref{eq:hazard-ratio}--\eqref{eq:survival-from-hazard}.
+Whether those derivations can be done \emph{in closed form} -- with a
+formula you can write down and evaluate directly -- or only
+\emph{numerically} -- by running an algorithm (an ODE solver, a root
+finder, a Monte Carlo average) every single time you want a number out of
+the model -- turns out to be one of the central technical distinctions
+this document uses to compare methods.
+
+\subsection{A worked example: the Weibull distribution}
+
+\begin{worked}
+The Weibull distribution is the classical workhorse of survival analysis
+and reliability engineering because it has a simple, interpretable hazard
+function. With shape parameter $\rho > 0$ and scale parameter $\lambda >
+0$,
+\[
+  h(t) = \lambda \rho (\lambda t)^{\rho - 1}, \qquad
+  S(t) = \exp\bigl(-(\lambda t)^\rho\bigr), \qquad
+  f(t) = h(t)\,S(t).
+\]
+Look at the hazard formula: if $\rho > 1$, $h(t)$ is increasing in $t$
+(wear-out); if $\rho < 1$, $h(t)$ is decreasing (infant mortality); if
+$\rho = 1$, $h(t) = \lambda$ is constant (this special case is the
+\emph{exponential} distribution, "memoryless" constant risk). Crucially,
+for \emph{no} value of $\rho$ does $h(t)$ turn over and change direction:
+a single Weibull hazard is monotone for every $\rho \ne 1$, full stop.
+This is not a limitation of how much data you have -- it is baked into
+the functional form. A bathtub-shaped hazard, or a hazard with two
+bumps, is a shape a single Weibull distribution can \emph{never}
+represent, no matter the sample size. This single fact -- that a fixed
+parametric family imposes a hard ceiling on which hazard shapes are even
+representable -- is the motivating problem of this entire research
+programme, and it recurs, in one guise or another, in Sections
+\ref{sec:classical}--\ref{sec:generative} below.
+\end{worked}
+
+\subsection{The censored likelihood: using exactly the right information}
+\label{sec:censored-likelihood}
+
+Now return to the central complication from Section~\ref{sec:why}: for
+each subject $i$ we do not observe $T_i$ directly. We observe a pair
+$(\tilde t_i, \delta_i)$, where
+\[
+  \tilde t_i = \min(T_i, C_i), \qquad
+  \delta_i = \mathbb{1}\{T_i \le C_i\} \;\; \text{(1 if the event was observed, 0 if censored)},
+\]
+with $C_i$ the (independent) censoring time. How should a model be fit to
+data like this? The key idea -- and the single most important
+construction in the entire field -- is to write down the \emph{correct}
+likelihood contribution for each subject given what was actually
+observed, rather than pretending the data is uncensored.
+
+\begin{itemize}
+  \item If $\delta_i = 1$ (event observed at $\tilde t_i$): we know
+    \emph{exactly} when the event happened. The likelihood contribution
+    is the density evaluated at that time, $f(\tilde t_i \mid x_i)$ --
+    exactly as in ordinary maximum-likelihood regression.
+  \item If $\delta_i = 0$ (censored at $\tilde t_i$): we know only that
+    the event has \emph{not yet happened} by time $\tilde t_i$. The
+    likelihood contribution is not a density value at all, but a
+    \emph{probability}: $\Pr(T_i > \tilde t_i \mid x_i) = S(\tilde t_i
+    \mid x_i)$.
+\end{itemize}
+
+Combining both cases into one formula (using $\delta_i$ as a $0/1$
+switch), the contribution of subject $i$ to the likelihood is
+\begin{equation}
+  L_i \;=\; f(\tilde t_i \mid x_i)^{\delta_i}\; S(\tilde t_i \mid x_i)^{1 - \delta_i},
+  \label{eq:censored-likelihood}
+\end{equation}
+and the full log-likelihood to be maximized over the whole dataset is
+\begin{equation}
+  \ell \;=\; \sum_{i=1}^n \Bigl[\delta_i \log f(\tilde t_i \mid x_i) + (1-\delta_i)\log S(\tilde t_i \mid x_i)\Bigr].
+  \label{eq:censored-loglik}
+\end{equation}
+This is the \textbf{exact right-censored likelihood}, and it is the
+estimation criterion this research's model is fit with. It is worth
+dwelling on why it is called \emph{exact}: Eq.~\eqref{eq:censored-loglik}
+is a direct, unmodified application of the maximum-likelihood principle
+to the data that was actually observed -- it is not an approximation, a
+re-weighting scheme, or a workaround. As Section~\ref{sec:deepaft}
+explains in detail, a great deal of the deep-learning survival literature
+does \emph{not} fit models this way, instead substituting an
+approximate or indirect estimation criterion (rank losses, inverse
+weighting, iterative imputation) -- usually because the model's chosen
+functional form for $f$ or $S$ makes Eq.~\eqref{eq:censored-loglik}
+inconvenient or impossible to evaluate directly. Whether a model can be
+trained by the honest formula in Eq.~\eqref{eq:censored-loglik}, or
+needs a substitute, is the second central technical distinction this
+document uses to compare methods (the first being closed-form versus
+numerical evaluation, from the previous subsection).
+
+\section{How survival models have traditionally been evaluated}
+\label{sec:evaluation}
+
+Before touring the models themselves, it helps to know how their quality
+is measured, because several of the historically popular metrics turn
+out to be more subtle -- and less trustworthy as a basis for comparing
+methods -- than they first appear. This section is necessary background
+for Section~\ref{sec:generative} onward, where evaluation choices become
+part of the story.
+
+\subsection{Discrimination: can the model rank subjects correctly?}
+
+The most widely reported metric is a \textbf{concordance index}
+(C-index), which asks: if you take two subjects at random (such that we
+can tell who had the earlier true event time), does the model's
+predicted risk score correctly rank them? Concretely, for every
+comparable pair $(i, j)$ with $\tilde t_i < \tilde t_j$ and $\delta_i =
+1$, check whether subject $i$'s predicted risk is higher than subject
+$j$'s; the C-index is the fraction of comparable pairs the model gets
+right (0.5 = no better than a coin flip, 1.0 = perfect ranking).
+
+\begin{worked}
+Suppose the model predicts risk scores $r_A = 0.8$, $r_B = 0.3$ for two
+patients, and patient $A$ truly died before patient $B$ (with $A$'s death
+observed, not censored, so the pair is comparable). The model correctly
+ranked $A$ as riskier, so this pair counts as \emph{concordant}. If
+instead $r_A = 0.2 < r_B = 0.3$, the pair would be \emph{discordant}. If
+patient $B$ were censored \emph{before} patient $A$'s event, we could not
+tell who truly had the higher risk, so the pair is simply excluded from
+the calculation. The C-index is (concordant pairs) $/$ (concordant $+$
+discordant pairs).
+\end{worked}
+
+Two subtleties matter a great deal for this research. First, the
+"classic" concordance index (Harrell's C) is known to be biased under
+heavy censoring, because pairs where the earlier subject is censored are
+silently dropped, and dropping is not random with respect to risk; Uno's
+C \citep{uno2011} corrects this with an inverse-probability-of-censoring
+weighting scheme. Second, and more importantly, \citet{sonabend2022chacking}
+points out a practice the field calls \textbf{"C-hacking"}: because there
+are several competing definitions of concordance (Harrell's, Uno's,
+time-dependent variants, and others), a researcher can always find
+\emph{some} variant under which their method looks best and report only
+that one. The discipline against this is to pre-specify, before running
+any experiment, exactly one concordance variant that will be reported --
+which is what this research does (Uno's C, chosen in advance).
+
+\subsection{Overall accuracy: the Brier score}
+
+The concordance index only measures \emph{ranking}, not whether the
+model's predicted \emph{probabilities} are numerically close to the
+truth. The Integrated Brier Score \citep{graf1999ibs} fixes this by
+computing, at a set of time horizons $t$, the squared error between the
+model's predicted survival probability $\hat S(t \mid x_i)$ and the
+actual observed outcome $\mathbb{1}\{\tilde t_i > t\}$, averaged over
+subjects and integrated over the time horizons of interest -- with an
+inverse-probability-of-censoring correction \citep{gerds2006} so that
+censored subjects still contribute a valid, unbiased term to the
+average rather than being silently dropped as in a naive squared-error
+calculation.
+
+\subsection{Calibration: are the predicted \emph{distributions} correct?}
+
+This is the metric family that matters most for the claims this research
+makes, and it is the one an ML/DL reader is least likely to have
+encountered before, because it has no exact analogue in ordinary
+classification or regression evaluation. A model can rank subjects
+perfectly (high C-index) while still being badly \textbf{miscalibrated}
+-- systematically predicting survival probabilities that are too high or
+too low in absolute terms, even though the relative ordering is right.
+
+\textbf{D-calibration} \citep{haider2020} tests this directly: take every
+subject's predicted survival probability \emph{at their own observed
+time}, $\hat S(\tilde t_i \mid x_i)$ (for an event-observed subject, this
+should behave like a draw from $\mathrm{Uniform}(0,1)$ if the model is
+correct -- a standard probability-integral-transform argument), bin these
+values into deciles, and run a chi-squared test for whether the bins are
+uniformly populated as they should be under a correctly specified model.
+The \textbf{integrated calibration index} (ICI, \citealp{austin2020ici})
+instead plots predicted probability against observed (smoothed) outcome
+frequency at a fixed time horizon and reports the average absolute gap
+between the two -- the survival-analysis analogue of a reliability
+diagram, familiar from classifier calibration, but adapted to handle
+censored outcomes correctly.
+
+\subsection{The evidence that reframes the whole comparison}
+
+The single most important piece of evaluation-methodology evidence this
+research relies on is empirical rather than definitional. In the largest
+neutral comparison conducted to date -- 19 different survival methods,
+spanning classical, machine-learning, and deep approaches, evaluated
+across 34 real datasets under one common, fair protocol --
+\citet{burk2024neutral} find that \emph{no method, including every deep
+learning method surveyed, significantly outperforms plain Cox regression
+in discrimination on standard, low-dimensional tabular survival data}.
+
+\begin{intuition}
+Why does this matter for how to read the rest of this document? It means
+that if this research (or any deep survival model) tried to justify
+itself by reporting a better C-index than Cox regression, the honest
+prior expectation, based on the best available neutral evidence, is that
+no such improvement is really there to be found -- any apparent gain
+would likely be noise, or an artefact of an unfair comparison protocol.
+The scientifically defensible place for a flexible, deep survival model
+to add value is therefore \emph{not} discrimination, but
+\textbf{calibration and distributional shape fidelity} -- whether the
+model's predicted probability distribution over event times is
+numerically correct and captures the true hazard shape, not merely
+whether it ranks subjects in the right order. This research's central
+claims, throughout, are built around calibration and hazard-shape
+recovery for exactly this reason, and it deliberately avoids leading with
+a concordance claim.
+\end{intuition}
+
+\section{Classical survival models}
+\label{sec:classical}
+
+\subsection{The Kaplan--Meier curve: the simplest possible starting point}
+
+Before any covariates enter the picture, the most basic survival
+estimator is the \textbf{Kaplan--Meier} curve: a step-function estimate
+of $S(t)$ built directly from the censored data, with no parametric
+assumptions and no covariates at all. It works by multiplying together,
+at each observed event time, the fraction of at-risk subjects who
+survived past that instant, correctly "skipping over" censored subjects
+by keeping them in the risk set up until the moment they are censored,
+then removing them without counting them as an event. It has no closed
+form and does not condition on covariates, so it is not itself a
+predictive model, but it is the estimator every more sophisticated method
+in this document is implicitly trying to improve upon.
+
+\subsection{The Cox proportional hazards model}
+\label{sec:cox}
+
+The Cox model \citep{cox1972} is the field's default tool for
+covariate-adjusted analysis. Its defining assumption is
+\textbf{proportional hazards}:
+\begin{equation}
+  h(t \mid x) \;=\; h_0(t)\,\exp(\beta^\top x),
+  \label{eq:cox}
+\end{equation}
+where $h_0(t)$ is an unspecified \textbf{baseline hazard} (the hazard for
+a subject with $x = 0$) and $\beta$ are covariate coefficients. The word
+"proportional" describes the key structural consequence: the
+\emph{ratio} of hazards between any two covariate profiles,
+$h(t\mid x_a)/h(t\mid x_b) = \exp\{\beta^\top(x_a - x_b)\}$, does not
+depend on $t$ at all -- one profile is always some fixed multiple riskier
+than the other, at every point in time. This is a strong, testable
+assumption, and it fails whenever a covariate's effect genuinely changes
+over time (a classic example: a surgical intervention that reduces
+short-term risk but has no long-term effect, or even reverses -- a
+"crossing hazards" scenario).
+
+The reason the Cox model is called \textbf{semiparametric} is that
+$\beta$ can be estimated by maximizing a \textbf{partial likelihood} that
+depends only on the \emph{ranking} of event times among at-risk subjects,
+without ever specifying $h_0(t)$ at all. This is elegant and one reason
+for the model's enduring popularity, but it has a direct cost relevant to
+this document: because $h_0(t)$ is never estimated as a smooth function
+(only recoverable afterward as a non-smooth Breslow-type step estimate),
+the Cox model produces \emph{no smooth density $f(t\mid x)$, no smooth
+hazard curve, and no closed-form quantile function} -- exactly the
+objects this research's model is built to deliver in closed form.
+
+\subsection{The accelerated failure time (AFT) model}
+\label{sec:aft}
+
+The AFT model \citep{wei1992aft} takes an entirely different approach: it
+specifies a complete parametric distribution for $\log T$ directly,
+\begin{equation}
+  \log T \;=\; \beta^\top x + \sigma\,\eps, \qquad \eps \sim F_0,
+  \label{eq:aft}
+\end{equation}
+where $F_0$ is a fixed, standard reference distribution (common choices:
+the extreme-value distribution, which makes $T$ Weibull-distributed; the
+normal distribution, which makes $T$ log-normal; the logistic
+distribution, which makes $T$ log-logistic), $\beta^\top x$ is a linear
+"location" term, and $\sigma$ is a scale parameter. Because $F_0$ is
+fully specified, \emph{everything} -- the density, the survival function,
+the hazard, and every quantile of $T$ -- is available in closed form as
+soon as $\beta$ and $\sigma$ are estimated (by directly maximizing
+Eq.~\eqref{eq:censored-loglik}, no partial-likelihood trick needed).
+
+\begin{intuition}
+The name "accelerated failure time" comes directly from what happens to
+the whole distribution when you change $x$. Compare two covariate
+profiles $x_a$ and $x_b$. From Eq.~\eqref{eq:aft}, $\log T_a - \log T_b =
+\beta^\top(x_a - x_b)$ when the same underlying $\eps$ is used for both
+(a coupling argument), so
+\begin{equation}
+  T_a \;=\; T_b \cdot \exp\{\beta^\top(x_a - x_b)\} \;=\; T_b \cdot \mathrm{TR},
+  \qquad \mathrm{TR} := \exp\{\beta^\top(x_a - x_b)\}.
+  \label{eq:time-ratio}
+\end{equation}
+Every event time for profile $a$ is exactly $\mathrm{TR}$ times the
+corresponding event time for profile $b$ -- \emph{not just the median or
+the mean, but every quantile of the distribution simultaneously.} If
+$\mathrm{TR} = 2$, profile $a$'s entire lifetime distribution is stretched
+to twice the length of profile $b$'s; if $\mathrm{TR} = 0.5$, it is
+compressed to half. This \textbf{time-ratio} or \textbf{acceleration
+factor} is, for many practitioners -- especially in reliability
+engineering, where "expected lifetime is doubled" feeds directly into
+warranty and maintenance planning -- a substantially more intuitive
+quantity to communicate than a Cox hazard ratio, which only describes an
+instantaneous relative rate, not how the whole distribution moves.
+\end{intuition}
+
+The AFT's cost is exactly the flip side of the Cox model's: by fixing
+$F_0$ to a specific standard distribution, the model inherits that
+distribution's hazard-shape restrictions. As the worked Weibull example
+in Section~\ref{sec:math} showed, a Weibull AFT can never represent a
+bathtub hazard; a log-normal AFT is likewise restricted to a single
+hump-shaped hazard. This is the central tension this entire research
+programme resolves: \emph{can we keep the AFT's closed-form tractability
+and time-ratio interpretability, while removing the restriction that
+$F_0$ must be a simple, fixed, named distribution?}
+
+\subsection{Flexible parametric (Royston--Parmar) models}
+A middle ground between Cox's total shape-freedom (but no smooth density)
+and the AFT's shape restriction (but full tractability) is
+\citet{royston2002}'s flexible parametric model, which represents the log
+cumulative hazard as a \textbf{restricted cubic spline} -- a flexible,
+piecewise-polynomial curve, smoothly joined at a handful of "knot"
+locations -- in $\log t$, rather than committing to a named parametric
+family:
+\[
+  \log H(t \mid x) \;=\; s(\log t;\, \gamma) + \beta^\top x.
+\]
+This is the strongest classical shape-flexible baseline available (and is
+one of the baseline models this research compares against), but because
+the spline is a free-form nonparametric object rather than a
+probability-generating transformation applied to a single latent
+variable, it does not, without further restriction, carry the
+location-scale AFT interpretation of Eq.~\eqref{eq:aft}: there is no
+single time-ratio quantity that summarizes the covariate effect the way
+$\mathrm{TR}$ in Eq.~\eqref{eq:time-ratio} does.
+
+\subsection{Random Survival Forests}
+Random Survival Forests \citep{ishwaran2008rsf} extend the idea of a
+decision-tree ensemble (familiar from ordinary classification/regression
+forests) to censored survival data, splitting on covariates to group
+similar subjects and averaging a Nelson--Aalen-type cumulative hazard
+estimate within each leaf. Like Cox regression, this handles nonlinearity
+and interactions without committing to a hazard shape, but -- again like
+Cox regression -- it produces no smooth conditional density, only a
+step-function-like ensemble curve, and its calibration properties are
+comparatively weak.
+
+\section{Deep learning survival models that keep a classical structure}
+\label{sec:dl}
+
+The next three families all apply neural networks to survival data, but
+each one does so by extending -- and thereby inheriting the limitations
+of -- one of the classical structures from Section~\ref{sec:classical}.
+
+\subsection{Deep Cox models}
+DeepSurv \citep{katzman2018deepsurv} is the most direct: it replaces the
+linear predictor $\beta^\top x$ inside the Cox partial likelihood
+(Eq.~\eqref{eq:cox}) with a neural network's output, $g_\theta(x)$,
+gaining the ability to model nonlinear covariate effects and
+interactions, but keeping everything else about the Cox model unchanged
+-- proportional hazards, an unspecified baseline hazard, partial (not
+full) likelihood, no smooth density. Cox-Time \citep{kvamme2019coxtime}
+extends this further by letting the network also depend on time,
+$g_\theta(x, t)$, which lets the model escape the strict proportionality
+assumption (hazard \emph{ratios} can now vary in time), but the
+estimator still factors through a shared, non-parametrically estimated
+baseline hazard, so the output remains a step-function survival curve
+rather than a smooth density.
+
+\subsection{Discrete-time models: DeepHit and friends}
+\label{sec:deephit}
+A different family sidesteps the Cox baseline-hazard machinery entirely
+by discretizing time onto a grid of bins $[0, \tau_1), [\tau_1, \tau_2),
+\ldots$, and having the network directly output a probability for
+"the event happens in this bin," for every bin. DeepHit
+\citep{lee2018deephit} is the best-known example: the network outputs a
+softmax distribution over the bins (a genuine, valid probability mass
+function that sums to 1, exactly the mechanism a classification network
+would use over class labels), trained with a loss that combines a
+likelihood-like term with a ranking term. This is a clever way to get a
+proper, trainable probability distribution over event time without
+needing to assume any parametric shape, and it can natively handle
+\emph{competing risks} (more than one possible type of event) by having
+one softmax per risk type.
+
+\begin{intuition}
+The cost of this trick is what we call the \textbf{discretization horn}
+throughout this document: because the model's output is a probability
+\emph{per bin}, not a density function of a continuous variable, the
+implied survival curve is a step function, jumping only at bin
+boundaries; there is no density or hazard value defined at an arbitrary
+time $t$ that falls inside a bin (only a bin-level probability); and any
+quantile the model reports (including the median survival time used to
+rank subjects for concordance) is only resolved to the width of a bin.
+Choosing the grid is therefore not a cosmetic detail but a real
+bias--variance trade-off baked directly into the estimator: a coarse
+grid with few, wide bins discards real temporal resolution the data may
+actually support; a fine grid with many, narrow bins multiplies the
+number of parameters to be estimated and can make training unstable
+under heavy censoring, where many bins may receive very few observed
+events at all.
+\end{intuition}
+
+Related discrete-time and interval-hazard models follow the same basic
+pattern with variations: DRSA \citep{ren2019drsa} predicts the same kind
+of per-bin probabilities autoregressively (one bin at a time, each
+conditioned on the previous); PC-Hazard \citep{kvamme2021pchazard}
+instead models a piecewise-\emph{constant} hazard within each bin, which
+admits a cleaner (piecewise) likelihood derivation; SurvTRACE
+\citep{wang2022survtrace} keeps the same discrete-hazard output but
+replaces the covariate encoder with a transformer architecture. All four
+inherit the same fundamental limitation described in the intuition box
+above.
+
+\subsection{Continuous-time flexible models}
+A smaller family tries to keep time genuinely continuous without
+discretizing it. SODEN \citep{tang2022soden} generalizes the DeepSurv /
+DeepHit idea through a system of ordinary differential equations (a
+\textbf{neural ODE}) whose numerical solution implicitly defines the
+hazard function -- gaining real flexibility, but at the cost of a density
+that is never available in closed form and must be recomputed by solving
+the ODE system every single time the model is evaluated. SuMo-net
+\citep{rindt2022sumonet} instead has a neural network directly
+parameterize $S(t \mid x)$, constrained by its architecture to always be
+monotonically decreasing in $t$, trained with a proper scoring rule
+rather than the exact likelihood; this gives a genuinely smooth survival
+curve, but the corresponding density and hazard exist only by
+numerically \emph{differentiating} the learned survival curve, which is
+not exact and tends to amplify estimation noise exactly in the tails
+where questions about bathtub or multimodal hazard shapes are decided.
+
+\section{Deep accelerated failure time models: a flexible location, but no distribution}
+\label{sec:deepaft}
+
+The natural next idea, following Section~\ref{sec:aft}, is to keep the
+AFT's Eq.~\eqref{eq:aft} but replace the linear location term
+$\beta^\top x$ with a neural network, $\mu_\theta(x)$. Several papers do
+exactly this -- and this section explains, in mechanical detail, the
+specific estimation trade-off every one of them makes.
+
+\subsection{Why "just add a neural network" breaks the exact likelihood}
+The AFT's closed-form tractability in Section~\ref{sec:aft} came from a
+specific fact: $F_0$ was a \emph{named, fixed} distribution with a known
+density formula. If you keep $F_0$ fixed but let $\mu_\theta(x)$ be an
+arbitrary neural network, the likelihood in
+Eq.~\eqref{eq:censored-loglik} is still perfectly well-defined and
+computable -- this is, in fact, exactly what this research's own
+$\mu(x)$ head does (Section~\ref{sec:model}). The papers discussed in
+this section, however, additionally leave the \emph{shape} of $F_0$
+unspecified (not just the location), which is precisely what removes the
+closed-form density needed to evaluate Eq.~\eqref{eq:censored-loglik}
+directly -- and it is at that point that each of these methods reaches
+for a substitute estimation criterion instead of the exact likelihood.
+
+\subsection{Buckley--James estimation and inverse-probability weighting}
+deepAFT \citep{norman2024deepaft} places a deep network on $\mu(x)$
+without committing to any $F_0$ at all, and estimates it using one of
+several classical semiparametric AFT-fitting techniques originally
+developed for the linear model: \textbf{Buckley--James} iterative
+imputation, which repeatedly replaces each censored observation's
+"missing" residual with its conditional expectation under the current
+model fit and re-fits, iterating to convergence; or
+\textbf{inverse-probability-of-censoring weighting (IPCW)}, which
+reweights each observation by the inverse of its estimated probability of
+\emph{not} having been censored by its observed time, so that
+uncensored observations "stand in" for the censored ones they are
+weighted to represent.
+
+\begin{intuition}
+Both techniques are well-established and valid in the classical
+(linear-$\mu$) AFT setting, but both share a structural weak point that
+matters directly for this research's design: their reliability degrades
+as the censoring proportion grows. Buckley--James imputation becomes
+increasingly reliant on extrapolating from a shrinking pool of
+fully-observed residuals as more of the data is censored. IPCW weights
+are the \emph{reciprocal} of an estimated survival probability for
+censoring; as that probability approaches zero (which becomes more
+common precisely when overall censoring is heavy), the weights blow up,
+and a small number of observations can dominate the entire fitted
+estimate. Because this research's simulation study explicitly sweeps
+censoring proportion from 0\% up to 80\%, this is exactly the regime
+where such estimators are expected, on general statistical grounds, to
+become least reliable -- which is part of the motivation for insisting
+on the exact likelihood (Eq.~\eqref{eq:censored-loglik}) instead.
+Whatever technique is used, the resulting deepAFT survival curve is a
+Kaplan--Meier-rescaled step function, not a smooth conditional density.
+\end{intuition}
+
+Two further variants follow the same likelihood-free pattern with a
+different neural architecture or training signal. DeepR-AFT
+\citep{kim2022deepraft} trains $\mu_\theta(x)$ using a
+\textbf{Gehan-type rank loss} -- a pairwise loss that only rewards
+getting the \emph{relative order} of predicted times right (structurally
+similar in spirit to the concordance idea from
+Section~\ref{sec:evaluation}), which supplies a valid training signal for
+ranking but carries no information at all about the scale or shape of
+the predicted distribution, so no calibrated density can be extracted
+from the fitted model. KAN-AFT \citep{francis2025kanaft} substitutes a
+Kolmogorov--Arnold network (a recent neural architecture that
+represents functions as sums of learned univariate splines rather than
+matrix-multiplication layers, offering a claimed advantage in symbolic
+interpretability of the fitted $\mu(x)$) for $\mu_\theta(x)$, but keeps
+the same likelihood-free estimation as deepAFT. Two further recent
+entries, GRAFT \citep{graft2026} and DART \citep{dart2023}, follow the
+identical pattern -- a flexible AFT-style location network trained with a
+concordance-aligned rank loss (with, in GRAFT's case, a post-hoc
+calibration correction bolted on afterward) -- and so occupy exactly the
+same position in this taxonomy.
+
+\subsection{Keeping the likelihood by fixing the shape instead}
+Two papers make the opposite trade: they keep the exact censored
+likelihood, but pay for it by fixing $F_0$ to a single, simple shape.
+Neural Conditional Event Time models \citep{engelhard2020neuralcet} --
+"Neural-CET" -- place neural networks on \emph{both} the location $\mu(x)$
+\emph{and} the scale $\sigma(x)$ of Eq.~\eqref{eq:aft}, and fit the model
+by the exact likelihood of Eq.~\eqref{eq:censored-loglik} -- but with
+$F_0$ fixed to the standard normal distribution. Structurally, this
+means Neural-CET \emph{is} a log-normal AFT model with a neural covariate
+map: the location and scale can be arbitrarily flexible functions of
+$x$, but the \emph{shape} of the residual distribution around that
+location and scale is permanently fixed to the single, symmetric,
+unimodal hump of the normal distribution -- exactly as shape-restricted,
+in principle, as the classical log-normal AFT of Section~\ref{sec:aft}.
+This is, in fact, the single closest prior model to the present
+research's own architecture, and this research includes an ablation
+model, called \emph{FlowSurv-Gauss}, that is constructed to be exactly
+this: the same neural $\mu(x)/\sigma(x)$ encoder as the full model, but
+with the flexible residual transform switched off and the base
+distribution fixed to Gaussian -- so that comparing the full model
+against this ablation isolates, as precisely as an experiment can, how
+much of any performance improvement comes specifically from freeing the
+residual shape rather than from any other architectural difference. DKAFT
+\citep{wu2021dkaft} makes a similar move using a Gaussian-process output
+layer in place of a plain neural network, but is likewise log-normal in
+effect. \citet{ranganath2016deepsurv}'s deep exponential family
+parameterizes Weibull-distributed event times through a deep generative
+model -- again, the exact likelihood is retained, but the fixed Weibull
+shape's monotone-hazard restriction (Section~\ref{sec:math}'s worked
+example) is inherited unchanged, however deep the covariate network
+becomes.
+
+\subsection{The pattern, stated once, clearly}
+Putting the two halves of this section side by side reveals a single,
+consistent pattern, and it is the pattern this research is built to
+break: \emph{every deep AFT model reviewed above either (a) keeps the
+exact censored likelihood, but fixes the residual distribution $F_0$ to a
+single named, unimodal shape (Gaussian in Neural-CET/DKAFT, Weibull in
+Ranganath et al.), which reintroduces exactly the hazard-shape ceiling
+described in Section~\ref{sec:aft}; or (b) frees the shape of the
+predicted distribution implicitly by abandoning the shape assumption
+altogether, but at the cost of abandoning the exact likelihood too
+(deepAFT, DeepR-AFT, KAN-AFT, GRAFT, DART), which reintroduces the
+estimation fragility described above.} No prior deep AFT model combines
+a genuinely free, learned residual distribution with the exact censored
+likelihood of Eq.~\eqref{eq:censored-loglik}.
+
+\section{Generative and flow-based survival models: the direct lineage}
+\label{sec:generative}
+
+This section covers the family of methods closest, in spirit, to this
+research's own approach: models that try to learn a genuinely flexible,
+shape-free residual distribution \emph{while still fitting it by the
+exact censored likelihood}. To understand the two closest prior works in
+detail, we first need to explain, from first principles, what a
+\textbf{normalizing flow} is -- a concept from the general deep
+generative modelling literature that an ML/DL reader may already know in
+the abstract, but which is worth re-deriving carefully here because its
+specific mathematical properties (closed-form invertibility, in
+particular) are the crux of this research's technical contribution.
+
+\subsection{Normalizing flows, from scratch}
+\label{sec:flows-from-scratch}
+
+Start from the standard \textbf{change-of-variables} formula for a
+continuous random variable. Suppose $Z$ has a known, simple distribution
+-- a \textbf{base distribution} -- with density $p_0(z)$ (a standard
+normal, or, as in this research, a standard logistic distribution). Let
+$g$ be a function that is \textbf{strictly monotone} (either always
+increasing or always decreasing) and therefore \textbf{invertible}, and
+define a new random variable $U = g^{-1}(Z)$, i.e., $Z = g(U)$. Then the
+density of $U$ is obtained by the familiar one-dimensional
+change-of-variables rule from probability theory,
+\begin{equation}
+  p_U(u) \;=\; p_0\bigl(g(u)\bigr) \cdot \bigl|g'(u)\bigr|,
+  \label{eq:change-of-variables}
+\end{equation}
+where $|g'(u)|$ -- the absolute value of the derivative of $g$, the
+one-dimensional Jacobian -- accounts for how much $g$ locally stretches
+or compresses the probability mass as it maps $u$ to $z$. A
+\textbf{normalizing flow} is exactly this construction, but with $g$
+itself built to be flexible -- typically the composition of several
+simple invertible transformations, often with the transformation's
+detailed shape controlled by extra parameters, which in the
+\emph{conditional} case (the case relevant to survival analysis) are
+themselves produced by a neural network taking covariates $x$ as input.
+This lets $p_U$ be, in principle, an arbitrarily complex, multimodal, or
+oddly-shaped distribution, built up from a simple base distribution
+$p_0$ via a learned, flexible, but always invertible transformation $g$.
+
+\begin{intuition}
+Why go to the trouble of insisting $g$ be invertible, rather than just
+using any neural network to map a simple noise variable to a complicated
+output (as, for instance, a GAN's generator does)? Because
+Eq.~\eqref{eq:change-of-variables} gives you an \emph{exact, evaluable
+density formula} for $U$ -- and an exact density formula is exactly what
+Eq.~\eqref{eq:censored-loglik}, the exact censored likelihood, needs in
+order to be computed at all. A GAN's generator is not (in general)
+invertible, so there is no way to write down $p_U(u)$ for a specific
+value $u$; you can only \emph{sample} from the model, not evaluate its
+likelihood at a specific point. A normalizing flow, precisely because
+$g$ is invertible and its Jacobian is tracked, gives you both: you can
+sample (map a draw from $p_0$ forward through $g^{-1}$), \emph{and} you
+can evaluate the exact density at any specific point (map that point
+backward through $g$ and apply Eq.~\eqref{eq:change-of-variables}). This
+is the entire reason normalizing flows are the natural tool for building
+a flexible residual distribution for the AFT model while still
+respecting the exact-likelihood discipline of
+Section~\ref{sec:censored-likelihood}.
+\end{intuition}
+
+There is a second, separate question beyond whether $g$ is invertible
+\emph{in principle}: whether $g^{-1}$ can be computed \emph{in closed
+form} (an explicit formula) or only by running a \emph{numerical
+algorithm} every time it is needed. This distinction -- closed-form
+inversion versus numerical inversion -- is precisely where the two
+closest prior works to this research, described next, differ from this
+research's own model.
+
+\subsection{Mixture-based approaches}
+Before turning to true normalizing flows, note that the simplest way to
+build a flexible, shape-free density while keeping the exact likelihood
+is a \textbf{mixture model}: a weighted sum of $K$ simple component
+densities (e.g., $K$ Weibull distributions), with a neural network
+producing the per-subject mixture weights and component parameters from
+$x$. Deep Survival Machines \citep{nagpal2022dsm} -- "DSM" -- is the
+standard, well-established example of this approach, and it is one of
+the main baseline models this research compares against throughout.
+Structurally, however, a mixture of $K$ unimodal components is still
+built from a \emph{finite sum} of simple pieces: with few components it
+genuinely cannot represent a bathtub or multimodal hazard; with many
+components, the number of mixture weights that must be estimated under
+censoring grows, and $K$ itself becomes a fragile hyperparameter to
+choose -- flexible only in a discrete, architecturally pre-committed
+sense, rather than a smoothly, continuously learned one.
+
+\subsection{Ausset et al.\ (2021): continuous normalizing flows via a neural ODE}
+\label{sec:ausset}
+
+\citet{ausset2021flows} (elaborated in the accompanying doctoral thesis,
+\citealp{ausset2021thesis}) is the closest prior published work to this
+research, and understanding exactly how it works -- and where it falls
+short of what this research delivers -- requires one more piece of
+machinery: a \textbf{continuous normalizing flow}, built from a
+\textbf{neural ordinary differential equation}.
+
+Instead of building $g$ as a composition of a fixed number of discrete
+transformation "layers" (the usual normalizing-flow construction),
+imagine letting the transformation happen \emph{continuously}, governed
+by a differential equation:
+\begin{equation}
+  \frac{dz(\tau)}{d\tau} \;=\; f_\theta\bigl(z(\tau), \tau, x\bigr), \qquad \tau \in [0, 1],
+  \label{eq:node}
+\end{equation}
+where $f_\theta$ is a neural network (the "velocity field") and $\tau$ is
+an artificial "flow time" running from $0$ to $1$ (not to be confused
+with the survival time $t$). Starting from $z(0) = u$ (a residual value)
+and integrating this differential equation forward to $\tau = 1$ gives
+$z(1) = g(u)$: the transformation $g$ is defined \emph{implicitly}, as
+"wherever this differential equation ends up after one unit of flow
+time," rather than by an explicit formula. This is exactly the idea
+Ausset et al.\ apply to survival analysis, training the resulting flow by
+the exact right-censored likelihood, and remarking, in passing, that the
+construction "can be seen as a generalization of the AFT model."
+
+\begin{intuition}
+What does it cost to work with a flow defined this way? Because $g$ has
+no explicit formula, \emph{every single time} the model needs a density
+value, a survival probability, a sample, or a quantile, it must
+\textbf{numerically solve the differential equation} in
+Eq.~\eqref{eq:node} from scratch -- using a numerical ODE solver that
+takes many small steps and accumulates a small amount of discretization
+error at each one. This is not a one-time setup cost paid at training
+time; it recurs at \emph{every} evaluation, including every single
+forward and backward pass during training itself. There is no way to
+write down $S(t\mid x)$ or a quantile as an explicit formula you could,
+for instance, differentiate by hand or evaluate on a pocket calculator --
+only "the number you get by running the solver."
+\end{intuition}
+
+Beyond this structural cost, a close reading of the Ausset thesis reveals
+three further, specific gaps relative to this research's design. First,
+the thesis's own review of alternative flow constructions explicitly
+considers, and sets aside in favour of the continuous formulation, the
+\emph{discrete}, layer-based flows this research uses instead -- so the
+route this research takes was a known, deliberately declined alternative
+in that prior work, not an oversight. Second, the empirical evaluation in
+that work is comparatively narrow: a single multimodal synthetic
+scenario, at one fixed 80\% censoring level, with Harrell's C
+(Section~\ref{sec:evaluation}) as the \emph{only} reported metric -- no
+hazard-shape recovery error measured against a known ground truth, no
+calibration analysis of any kind, and no controlled study of how
+performance changes as censoring proportion or censoring mechanism
+varies. Third, and directly relevant to interpretability: although the
+authors describe their model as "a generalization of the AFT," the
+fitted model has no explicit $\mu(x)/\sigma(x)$ decomposition of the kind
+in Eq.~\eqref{eq:aft}, and no time-ratio quantity
+(Eq.~\eqref{eq:time-ratio}) is ever extracted or validated anywhere in
+the thesis -- the AFT connection remains a one-sentence framing remark,
+not a feature of the fitted model that a practitioner could actually use.
+
+\subsection{Li \& Cai (2026): discrete monotone flows with no closed-form inverse}
+\label{sec:licai}
+
+The second closest work is concurrent with, and at the time of writing
+still unpublished relative to, this research: \citet{licai2026}, under
+review for STAI-X 2026. Where Ausset et al.\ build their flow
+\emph{continuously} via a differential equation, Li \& Cai build a
+\textbf{discrete monotone flow} directly: a function $g$ constructed as a
+sum of scaled and shifted $\tanh$ functions (a "tanh-sum" flow), each
+individual term monotone increasing, so the sum is guaranteed monotone
+increasing too, and therefore invertible in principle. Because the
+transform is built from an explicit formula rather than an implicit ODE
+solution, the \emph{forward} direction -- computing $g(u)$, and hence the
+density and survival function via
+Eq.~\eqref{eq:change-of-variables} -- is available in closed form,
+and the model is trained by the exact right-censored likelihood, augmented
+with a distribution-matching (Soft--Nelson--Aalen Wasserstein)
+regularization term and an extension addressing informative censoring
+via a shared latent variable.
+
+The catch is the \emph{reverse} direction. A sum of $\tanh$ functions
+does not, in general, have a closed-form algebraic inverse -- there is no
+formula you can write down for $g^{-1}(z)$ the way there is, for
+instance, for a linear function or the Weibull's own quantile function.
+To invert it, Li \& Cai's approach (as reviewed in the manuscript under
+this project's pre-registered novelty sweep) uses \textbf{bisection
+search}: a simple, general-purpose root-finding algorithm that
+repeatedly halves a bracketing interval known to contain the answer,
+narrowing in on the true value of $g^{-1}(z)$ one binary digit of
+precision at a time, over roughly 40 iterations to reach acceptable
+accuracy.
+
+\begin{intuition}
+Why does this matter? \emph{Sampling} from the model -- generating a
+synthetic event time, which many downstream uses require, such as
+uncertainty quantification via many simulated draws, or generating a
+predicted median or other quantile of survival time for an individual
+patient -- requires applying $g^{-1}$, since sampling always goes from
+the simple base distribution to the data space. Under Li \& Cai's
+construction, \emph{every single sample or quantile query requires
+running a fresh 40-step bisection search}, an iterative numerical
+procedure, rather than evaluating one closed-form expression. This is a
+smaller, more contained cost than solving a full differential equation
+(Section~\ref{sec:ausset}), but it is the same fundamental issue in a
+different guise: \textbf{exactness in one direction (forward, toward the
+likelihood) does not imply exactness in the other (backward, toward
+samples and quantiles)}, and Li \& Cai's construction, like Ausset et
+al.'s, is exact in only one of the two directions. Separately, because
+the transform's parameters (the tanh terms' locations and scales) are
+general functions of the covariates $x$ rather than entering through the
+specific location-scale form of Eq.~\eqref{eq:aft}, the model has no
+acceleration-factor interpretation of the kind Section~\ref{sec:aft}
+described -- the map is flexible, but it is not of AFT type.
+\end{intuition}
+
+The manuscript's reported simulation study, as reviewed, uses only
+standard parametric distribution families for the underlying
+data-generating process (no bathtub, multimodal, or crossing-hazard
+scenario is included), reports no calibration metric of the kind
+described in Section~\ref{sec:evaluation}, and does not include a
+controlled sweep over censoring proportion. The distribution-matching
+regularizer and the informative-censoring extension are genuine,
+valuable technical contributions in their own right, and this research
+cites them as complementary rather than competing ideas -- but the
+specific combination this research is built around (bidirectional
+closed-form exactness \emph{and} an explicit AFT decomposition \emph{and}
+a systematic hazard-shape/calibration study across censoring regimes)
+remains open in this concurrent manuscript, as reviewed.
+
+\subsection{A parallel statistical vocabulary: transformation models}
+A separate statistical literature -- \textbf{deep conditional
+transformation models} \citep{baumann2021transformation} and
+\textbf{DRIFT} \citep{kolb2024drift} -- arrives at essentially the same
+underlying object (a flexible, invertible, monotone transformation of a
+latent variable, fit by a censored likelihood) starting from
+distributional regression theory rather than from the normalizing-flow
+literature. These are, mathematically, close relatives of the flow-based
+models above viewed through different vocabulary and motivation, and a
+further recent entrant, \citet{yuan2025transformation}, develops a
+related interval-censored, partially-linear transformation model fit by
+a monotone-spline sieve maximum likelihood combined with a deep neural
+covariate map; none of these papers is cast in the AFT location-scale
+form of Eq.~\eqref{eq:aft} or evaluated for hazard-shape recovery across
+a controlled censoring sweep.
+
+\subsection{Other, more distant approaches}
+For completeness: \citet{miscouridou2018} was an early attempt (2018) at
+applying an invertible transform of a Weibull base distribution to
+survival data, but inside a latent-variable model fit by
+\textbf{variational inference} (optimizing an evidence lower bound, an
+approximation to the true likelihood rather than the exact likelihood
+itself). \citet{chapfuwa2018adversarial} and the related survival-function
+matching work \citep{chapfuwa2021sfm} generate event times using an
+\textbf{adversarial (GAN-style)} mechanism, which imposes essentially no
+shape restriction at all on the generated distribution but, as the
+intuition box in Section~\ref{sec:flows-from-scratch} explained, provides
+no tractable likelihood and no closed-form survival function, and is
+prone to the training instability GANs are generally known for. Finally,
+\citet{gharari2023copula} tackle the harder problem of
+\emph{dependent} censoring using deep copula models -- explicitly out of
+the scope of this research, as noted in Section~\ref{sec:censoring-types},
+but the relevant reference point for anyone wishing to extend this line
+of work in that direction.
+
+\section{This research's method: FlowSurv-AFT, in full mathematical detail}
+\label{sec:model}
+
+With the whole landscape in view, this section explains exactly what
+this research does, and how it resolves the tension identified at the
+end of Section~\ref{sec:aft}: keep the AFT's closed-form tractability
+and its time-ratio interpretability, but remove the restriction that the
+residual distribution $F_0$ be a fixed, named, shape-restricted family --
+\emph{and} do so with a transform that is exactly invertible \emph{in
+both directions}, unlike either of the two closest prior works just
+described.
+
+\subsection{The model, stated}
+The model keeps the AFT's location-scale decomposition of
+Eq.~\eqref{eq:aft} exactly, but with both the location \emph{and} the
+scale given by a shared neural network (an "encoder"), and with the
+residual $\eps$'s distribution given by a flexible, learned, conditional
+transform of a fixed, simple base distribution:
+\begin{equation}
+  \log T \;=\; \mu(x) + \sigma(x)\,\eps, \qquad
+  \eps \;=\; g^{-1}\bigl(Z\,;\, h(x)\bigr), \qquad
+  Z \sim \mathrm{Logistic}(0, 1),
+  \label{eq:flowsurv}
+\end{equation}
+where $\mu(x)$ and $\sigma(x) > 0$ are the AFT's usual location and scale
+functions (here, outputs of a neural network rather than a linear
+function of $x$), $h(x)$ is a further, separate output of the same
+network supplying the parameters that control the shape of the
+transform $g$, and $g(\cdot\,; h(x))$ is a \textbf{conditional
+rational-quadratic spline (RQS)} transform -- the specific choice of
+flexible, invertible function this research uses, explained next.
+
+\subsection{Rational-quadratic spline transforms: the technical heart of the model}
+\label{sec:rqs}
+
+The central design decision -- the one that gives this research's model
+its defining advantage over both of the closest prior works
+(Sections~\ref{sec:ausset}--\ref{sec:licai}) -- is the specific choice of
+$g$. Rather than an implicit ODE solution (Ausset et al.) or a sum of
+$\tanh$ functions with no closed-form inverse (Li \& Cai), this research
+uses a \textbf{rational-quadratic spline}, following
+\citet{durkan2019nsf}'s construction from the general normalizing-flow
+literature, applied here to a survival residual for the first time (to
+our knowledge; see Section~\ref{sec:generative} for the full novelty
+argument).
+
+Here is how it is built, piece by piece. First, choose a bounded interval
+$[-B, B]$ on the residual axis (outside this interval, $g$ is fixed to be
+the identity map, $g(u) = u$, so the transform only does interesting work
+in a controlled, bounded region -- the "tails" behave simply and
+predictably). Divide $[-B, B]$ into $K$ bins using $K+1$ \textbf{knot}
+points, both on the input ($u$) axis and, correspondingly, on the output
+($z$) axis, chosen (via the conditioning network's output $h(x)$) so that
+the map from input knots to output knots is monotone increasing. Within
+each bin, rather than connecting the two knot points with a straight
+line (which would only allow $g$ to be piecewise-\emph{linear}, quite
+restrictive) or an ordinary cubic polynomial (which does not, in
+general, guarantee monotonicity), the transform uses a
+\textbf{rational-quadratic function} -- the ratio of two quadratic
+polynomials in $u$ -- with its two free coefficients chosen (again from
+$h(x)$) so that the function's derivative at both bin endpoints matches a
+specified, positive target value. A short calculus argument
+\citep{durkan2019nsf} shows that as long as those target derivatives are
+positive, the resulting rational-quadratic piece is \emph{guaranteed}
+monotone increasing across the whole bin -- which is exactly the property
+needed for $g$ to be invertible at all.
+
+\begin{intuition}
+Why go to the trouble of a rational-quadratic function specifically,
+rather than something simpler? Because within each bin, both the forward
+map $z = g(u)$ \emph{and} its inverse $u = g^{-1}(z)$ can be written down
+as explicit, closed-form algebraic formulas -- solving a
+rational-quadratic equation for its root is a standard, closed-form
+computation (essentially an application of the quadratic formula), not
+an iterative numerical procedure. And because the transform is applied
+\emph{bin by bin} to bounded pieces, the derivative $g'(u)$ needed for
+the Jacobian term in Eq.~\eqref{eq:change-of-variables} is likewise an
+explicit formula, not something requiring automatic differentiation
+through an unrolled numerical solver. \textbf{This is the single
+technical fact that makes this research's model bidirectionally
+exact where the two closest prior works are each exact in only one
+direction}: Ausset et al.'s continuous flow needs an ODE solver for
+\emph{both} directions; Li \& Cai's discrete flow is closed-form forward
+but needs 40-step bisection backward; this research's spline flow is
+closed-form in \emph{both} directions, with no numerical solver anywhere
+in the model.
+\end{intuition}
+
+Composing several such spline "blocks" (the model uses between 1 and 3,
+chosen by validation) gives the full transform $g(\cdot\,; h(x))$, and
+the change-of-variables formula from
+Eq.~\eqref{eq:change-of-variables} -- now conditional on $x$ through both
+$h(x)$'s control of $g$ and the outer AFT location-scale transformation
+of Eq.~\eqref{eq:flowsurv} -- delivers all four of the model's core
+outputs in closed form:
+\begin{align}
+  S(t \mid x) &= 1 - F_0\bigl(g(u(t); h(x))\bigr), \\
+  f(t \mid x) &= f_0\bigl(g(u(t); h(x))\bigr)\cdot\bigl|g'(u(t); h(x))\bigr| \big/ \bigl(t\,\sigma(x)\bigr), \\
+  h(t \mid x) &= f(t\mid x) \big/ S(t \mid x), \\
+  Q(q \mid x) &= \exp\Bigl\{\mu(x) + \sigma(x)\, g^{-1}\bigl(F_0^{-1}(q);\, h(x)\bigr)\Bigr\},
+\end{align}
+where $u(t) = (\log t - \mu(x))/\sigma(x)$, and $F_0$, $f_0$ are the CDF
+and density of the standard logistic base distribution -- both of which
+are themselves elementary, closed-form functions (the logistic sigmoid
+and its derivative). \textbf{Sampling} is likewise one pass: draw $Z$
+from the base logistic distribution, apply $g^{-1}(\cdot\,; h(x))$, and
+exponentiate through the AFT location-scale transform -- no iteration,
+no solver, no rejection sampling.
+
+\subsection{A principled starting point: the log-logistic warm start}
+One further design choice matters for both optimization stability and
+for how the model's flexibility is judged experimentally. The spline
+transform's parameters are initialized so that, at the very start of
+training, $g$ is \emph{exactly} the identity map ($g(u) = u$ for every
+$u$, achieved by initializing the conditioning network's final layer to
+output zero). Substituting the identity for $g$ in
+Eq.~\eqref{eq:flowsurv} collapses the model exactly to
+$\log T = \mu(x) + \sigma(x) Z$ with $Z$ logistic -- in other words,
+\textbf{at initialization, this research's deep flow model is
+identical to a log-logistic AFT model} (one of the classical models in
+Section~\ref{sec:aft}), and only departs from it as training finds
+support in the data for additional residual flexibility. This matters
+for the experimental design described in Section~\ref{sec:study}: it
+guarantees that on data genuinely generated by a classical AFT-shaped
+mechanism, the flexible model has a principled, built-in route to
+recovering essentially the classical answer, rather than being forced to
+"discover" a simple shape from scratch inside a much larger, generic
+function class.
+
+\subsection{Fitting the model}
+The complete set of parameters -- everything controlling $\mu(x)$,
+$\sigma(x)$, and $h(x)$, i.e., the entire neural encoder together with
+the spline transform's conditioning -- is fit in a single pass by
+directly maximizing the exact right-censored log-likelihood of
+Eq.~\eqref{eq:censored-loglik}, with $f$ and $S$ substituted from the
+closed-form expressions above. No partial likelihood
+(Section~\ref{sec:cox}), no discretization
+(Section~\ref{sec:deephit}), no inverse-probability weighting or
+iterative imputation (Section~\ref{sec:deepaft}), and no approximate
+lower bound in place of the true likelihood
+(Section~\ref{sec:generative}) is used anywhere in fitting the model.
+
+\subsection{What this buys, concretely}
+Putting the pieces of this section together, FlowSurv-AFT delivers, in
+one model: an event-time distribution whose \emph{shape} is learned from
+data rather than restricted to a named family (so it can, in principle,
+represent bathtub and multimodal hazards, unlike any classical AFT model
+or the Neural-CET/DKAFT ablation family); every one of density, survival,
+hazard, quantile, and sample available as a closed-form computation with
+no numerical solver in either direction (unlike both Ausset et al.\ and
+Li \& Cai); an explicit $\mu(x)/\sigma(x)$ decomposition supporting the
+same time-ratio interpretation as the classical AFT
+(Eq.~\eqref{eq:time-ratio}), which none of the flexible generative models
+in Section~\ref{sec:generative} provide; and estimation by the same
+honest, exact censored likelihood the classical AFT itself uses, with no
+substitute criterion standing in for it.
+
+\section{Why this is different: the full comparison, in one place}
+\label{sec:comparison}
+
+Table~\ref{tab:comparison-plain} restates, in the plain-language terms
+this document has built up, the comparison that
+Section~\ref{sec:generative} developed model by model. Read each row as
+answering: "does this family of models have this property, \emph{as a
+structural fact about its functional form and estimation method} --
+regardless of how much data or compute is thrown at it?"
+
+\begin{table}[h!]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{p{3.3cm}p{2.5cm}p{3.1cm}p{2.3cm}p{2.7cm}}
+\toprule
+\textbf{Model family} & \textbf{Can represent bathtub/multimodal hazards} & \textbf{Every output (density, survival, quantile, sample) closed-form, no solver} & \textbf{Has a time-ratio (AFT) interpretation} & \textbf{Fit by the exact censored likelihood, no substitute} \\
+\midrule
+Cox / deep Cox (DeepSurv, Cox-Time) & Yes (no shape restriction) & No (step-function baseline) & No & No (partial likelihood) \\
+Weibull / log-normal AFT & No (fixed named shape) & Yes & Yes & Yes \\
+Royston--Parmar spline & Yes & Yes & No & Yes \\
+DeepHit / discrete-time models & Yes, within grid resolution & No (grid steps only) & No & Yes, but only over a discretized grid \\
+deepAFT / DeepR-AFT / KAN-AFT / GRAFT / DART & Yes (shape unrestricted) & No (no density at all) & Yes & No (rank loss / imputation / IPCW) \\
+Neural-CET / DKAFT & No (fixed Gaussian shape) & Yes & Yes & Yes \\
+Deep Survival Machines (mixture) & Only approximately, via $K$ components & Yes & No & Yes \\
+Ausset et al.\ (2021), continuous flow & Yes & No (ODE solver needed, both directions) & No & Yes \\
+Li \& Cai (2026), discrete flow & Yes & Forward only (backward needs 40-step search) & No & Yes (forward) \\
+\textbf{This research: FlowSurv-AFT} & \textbf{Yes} & \textbf{Yes, both directions, no solver} & \textbf{Yes} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}
+\caption{The full comparison in plain terms. This research's model is the
+only row with a "Yes" in every column.}
+\label{tab:comparison-plain}
+\end{table}
+
+\section{What this research actually does: the study design}
+\label{sec:study}
+
+Building the model is only half the contribution; the other half is
+\emph{demonstrating}, with evidence rather than assertion, when and why
+it should be preferred. This section explains the experimental design in
+plain terms.
+
+\subsection{A simulation study built around known ground truth}
+The central methodological advantage of a \emph{simulation} study is that
+the true hazard shape, the true survival function, and the true density
+are all \emph{known exactly}, because the researcher wrote down the
+data-generating mechanism -- unlike real clinical or reliability data,
+where the truth is never directly observable and a model's error cannot
+be measured against a known target, only inferred indirectly. This
+research generates data under several distinct hazard-shape scenarios --
+including a standard Weibull scenario (where classical AFT models should
+do well, by construction), and bathtub, multimodal, and covariate-crossing
+scenarios (the shapes Section~\ref{sec:math} argued a classical AFT model
+\emph{cannot} represent, no matter the sample size) -- and, for each
+scenario, systematically varies sample size, the proportion of censored
+observations (from 0\% up to a heavy 80\%), and the censoring mechanism
+(Type~I versus Type~III, Section~\ref{sec:censoring-types}), fitting
+every method under comparison to every combination.
+
+Because the true hazard is known in simulation, the study can compute a
+\textbf{hazard-recovery error}: a direct numerical distance between each
+model's estimated hazard curve and the true one, at each covariate
+profile, on a fine time grid -- the single most direct test of whether a
+model actually recovers the shape it was designed to recover, as opposed
+to indirect proxies like concordance. This, together with
+distributional-fidelity measures (comparing estimated and true cumulative
+distribution functions directly) and the calibration metrics from
+Section~\ref{sec:evaluation}, is what this research's central hypotheses
+(restated in plain language below) are tested against.
+
+\subsection{The four hypotheses, restated in plain language}
+\begin{itemize}
+  \item \textbf{H1a (flexibility -- shape and location perturbations,
+    confirmatory).} On hazard shapes that are still, underneath,
+    variations in the \emph{shape or location} of a single residual
+    distribution -- a multimodal (two-hump) hazard, or a hazard whose
+    location $\mu(x)$ moves nonlinearly with covariates -- FlowSurv-AFT
+    should recover the true hazard more accurately than every classical,
+    machine-learning, and deep baseline tested, including the
+    mixture-based comparator (DSM).
+  \item \textbf{H1b (flexibility -- mechanism-misaligned shapes,
+    descriptive only).} A pilot run partway through this research
+    surfaced an important nuance, worth stating plainly rather than
+    papering over: some bathtub- or crossing-hazard scenarios are
+    generated by a mechanism that does not sit naturally inside the AFT
+    picture at all. Recall from Eq.~\eqref{eq:aft} that the AFT
+    decomposition lets covariates \emph{shift and stretch the time axis}
+    ($\mu(x)$, $\sigma(x)$) and, in this research's version, also
+    \emph{reshape the residual distribution} through the flow's
+    conditioning $h(x)$ -- but if the true mechanism instead multiplies
+    the \emph{hazard itself} by a covariate factor at every instant (the
+    Cox-style form $h(t\mid x) = h_0(t)\cdot\exp(\beta^\top x)$, which is
+    how one of the bathtub scenarios in this study's simulation design
+    is actually generated), that covariate effect has to be represented
+    entirely through the harder, less naturally-optimized shape pathway
+    $h(x)$ rather than the location pathway the model is warm-started
+    toward (Section~\ref{sec:model}). A reduced-budget tuning pass, two
+    increases in the model's spline capacity, and an experiment that
+    deliberately broke the identity warm start all failed, independently
+    and consistently, to close a gap against DSM observed on exactly
+    these scenarios -- evidence that this is a genuine property of the
+    mechanism, not simply a case of the model being undertrained or
+    badly configured. For these specific scenarios, then, this research
+    does not claim FlowSurv-AFT beats DSM; the comparison is reported
+    honestly, without a predicted direction, rather than forced to fit
+    the original blanket hypothesis. This is, if anything, a more useful
+    scientific answer than a clean sweep would have been: it says
+    precisely \emph{which} kinds of hazard-generating mechanisms an
+    AFT-shaped flow model helps with, and which ones still call for a
+    different modelling approach altogether.
+  \item \textbf{H2 (calibration under censoring).} Models trained by the
+    exact censored likelihood should hold up better, in calibration
+    terms, as censoring gets heavier, than models trained by discretized
+    or partial-likelihood surrogates -- and the size of this advantage
+    should \emph{grow} as censoring proportion increases, for the
+    estimator-fragility reasons discussed in Section~\ref{sec:deepaft}.
+  \item \textbf{H3 (no penalty for flexibility).} On data that genuinely
+    is Weibull-shaped -- exactly the setting a classical AFT model is
+    designed for -- FlowSurv-AFT should not do meaningfully worse than
+    the classical Weibull AFT itself, thanks to the log-logistic warm
+    start described in Section~\ref{sec:model}: the extra flexibility
+    should cost nothing when the data does not need it.
+  \item \textbf{H4 (interpretability preserved).} Where a classical AFT
+    model is already an adequate description of real data, this
+    research's learned time ratios (Eq.~\eqref{eq:time-ratio}, computed
+    from the fitted $\mu(x)$) should agree closely with the classical
+    model's own time ratios -- evidence that the flexible model's
+    acceleration-factor estimates can be trusted -- while, on covariates
+    where the classical linear model is \emph{not} adequate, the fitted
+    model should reveal genuinely nonlinear acceleration effects a
+    linear AFT cannot represent at all.
+\end{itemize}
+
+\subsection{Real-data validation}
+Beyond the simulation study, the model is also fit to five public
+clinical benchmark datasets covering a range of real censoring
+proportions and covariate structures, to check that the simulation
+findings transfer to real, uncontrolled data. Consistent with the
+evaluation-methodology discussion in Section~\ref{sec:evaluation}, the
+real-data claims this research makes are deliberately restricted to
+calibration and distributional quality rather than concordance,
+because -- per \citet{burk2024neutral} -- concordance improvements on
+standard tabular clinical data are not, in general, expected to be
+available to any method, flexible or otherwise; the honest place to look
+for an advantage is whether the predicted \emph{distributions} are
+better calibrated, especially on the most heavily censored of the five
+datasets.
+
+\section{Summary}
+\label{sec:summary}
+
+Survival analysis exists because some outcomes are only partially
+observed, and every model in this field is, at bottom, a choice of
+functional form for the event-time distribution together with a choice
+of how to fit that form using both fully- and partially-observed data
+correctly (Sections~\ref{sec:why}--\ref{sec:math}). Reviewing the field's
+history model by model (Sections~\ref{sec:classical}--\ref{sec:generative})
+reveals a consistent pattern: every existing approach gains flexibility,
+tractability, interpretability, or exact-likelihood estimation by giving
+up at least one of the other three. This research's model,
+\textbf{FlowSurv-AFT}, is constructed specifically to occupy the gap left
+by that pattern: it keeps the classical accelerated failure time model's
+closed-form tractability and its interpretable time-ratio effect measure,
+replaces the classical model's restrictive fixed residual distribution
+with a rational-quadratic spline transform that is exactly invertible in
+\emph{both} directions -- unlike either of the two closest prior flow-based
+models, each of which is exact in only one direction -- and fits the
+whole model by the same honest, exact censored likelihood the classical
+model itself uses, with no approximation or substitute criterion
+anywhere. The accompanying simulation and real-data study is designed to
+show, with direct evidence rather than assertion, exactly when this
+combination pays off, and to be explicit -- following the best current
+evaluation-methodology practice in the field -- about the one thing it is
+not designed to claim: that it ranks patients better than a fifty-year-old
+regression model, because the best available evidence says that claim is
+not there to be made on data of this kind in the first place.
+
+\bibliographystyle{apalike}
+\bibliography{references}
+
+\end{document}

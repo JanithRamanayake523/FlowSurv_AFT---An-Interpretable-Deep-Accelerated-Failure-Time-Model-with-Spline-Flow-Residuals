@@ -50,3 +50,13 @@ configs/sim/*.yaml
 
 # local assistant context — kept local, not committed
 AGENTS.md
+
+# LaTeX build byproducts (manuscript/) — reproducible from the .tex/.bib sources
+manuscript/*.aux
+manuscript/*.bbl
+manuscript/*.blg
+manuscript/*.fdb_latexmk
+manuscript/*.fls
+manuscript/*.log
+manuscript/*.out
+manuscript/*.toc

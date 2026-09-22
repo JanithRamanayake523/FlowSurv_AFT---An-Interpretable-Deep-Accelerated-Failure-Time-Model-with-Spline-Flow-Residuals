@@ -1,0 +1,586 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{pifont}
+\usepackage[colorlinks=true,citecolor=blue,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage[round,authoryear]{natbib}
+\usepackage{times}
+
+\newcommand{\eps}{\varepsilon}
+
+\title{Related Work: Positioning FlowSurv-AFT in the Landscape of\\
+Survival Analysis Methodology}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Introduction to the review}
+
+Time-to-event (survival) analysis is distinguished from ordinary regression
+by \emph{censoring}: for a subset of subjects the event of interest --
+death, relapse, mechanical failure, default -- has not occurred by the end
+of follow-up, so only a lower bound on the true event time is observed. A
+survival model must therefore do two things simultaneously: incorporate
+censored observations correctly into estimation, and represent the shape of
+the conditional event-time distribution, whose hazard function may be
+monotone increasing (wear-out), monotone decreasing (early-life failure),
+bathtub-shaped (high early risk, a stable middle period, rising late risk --
+canonical in reliability engineering and in oncology follow-up), multimodal
+(heterogeneous sub-populations pooled under one label), or non-proportional
+across covariate strata (treatments whose relative benefit reverses in
+time). No published model, to our knowledge, combines an arbitrary
+learned hazard shape, exact closed-form inference in both directions, and
+the interpretability of the classical accelerated failure time (AFT)
+framework, estimated by the full right-censored likelihood. This section
+develops that claim in detail, tracing four methodological lineages --
+classical, machine-learning, discriminative/discrete-time deep, and
+generative/flow-based -- to the point where each is shown to surrender
+at least one of these four properties, and situates the present
+contribution, \emph{FlowSurv-AFT}, in the resulting gap.
+
+The review is organized as follows. Section~\ref{sec:classical} covers the
+classical parametric and semiparametric baselines that remain the
+default choice in applied practice. Section~\ref{sec:ml} covers
+ensemble/machine-learning survival models and the recent large-scale
+neutral-comparison evidence that reframes what a "win" should mean in
+this literature. Section~\ref{sec:dl} reviews deep survival models that
+retain a proportional-hazards or discrete-time structure.
+Section~\ref{sec:deepaft} is a focused critical analysis of the deep AFT
+literature, which we argue has consistently traded away the exact
+likelihood in exchange for a flexible covariate map.
+Section~\ref{sec:generative} covers generative and flow-based survival
+models, with particular emphasis on the two works closest to the present
+contribution -- \citet{ausset2021flows} and the concurrent
+\citet{licai2026} -- which we differentiate in detail.
+Section~\ref{sec:evaluation} reviews the evaluation methodology literature
+that constrains which claims this line of work is entitled to make.
+Section~\ref{sec:synthesis} synthesizes the review into a four-camp
+taxonomy and states the resulting research gap formally.
+
+\section{Classical survival models}
+\label{sec:classical}
+
+The Cox proportional-hazards model \citep{cox1972} remains survival
+analysis's default tool. It is semiparametric: the partial likelihood
+estimates the log-hazard-ratio coefficients $\beta$ without specifying the
+baseline hazard $h_0(t)$, which is recovered only as a non-smooth
+Breslow-type step function if a survival curve is required at all. Two
+consequences follow directly from this construction. First, Cox regression
+assumes proportional hazards -- $h(t\mid x) = h_0(t)\exp(\beta^\top x)$ --
+so it cannot represent hazard ratios that vary in time (crossing survival
+curves), without extension (time-varying coefficients, stratification).
+Second, because the baseline hazard is nonparametric, the model yields no
+smooth conditional density $f(t\mid x)$ and no closed-form quantile
+function; both must be obtained, if at all, by post-hoc smoothing of the
+step-function estimate.
+
+The accelerated failure time (AFT) model \citep{wei1992aft} takes the
+complementary route: it specifies a full parametric law for $\log T$,
+\begin{equation}
+  \log T = \beta^\top x + \sigma \eps, \qquad \eps \sim F_0,
+  \label{eq:aft}
+\end{equation}
+with $F_0$ a fixed standard distribution -- extreme-value (giving a Weibull
+$T$), logistic (log-logistic $T$), or normal (log-normal $T$). This
+buys two things a Cox model does not provide: a closed-form density,
+survival, hazard and quantile function in one pass, and the
+\emph{acceleration factor} interpretation, $\mathrm{TR} =
+\exp\{\beta^\top(x_a - x_b)\}$, the multiplicative change in the entire
+event-time distribution (every quantile simultaneously) between two
+covariate profiles -- an effect measure that is arguably more intuitive to
+non-statistician stakeholders than a hazard ratio, and the natural
+communication tool in reliability engineering, where "time-to-failure is
+multiplied by $\mathrm{TR}$" maps directly onto warranty and maintenance
+planning. The AFT's cost is the parametric assumption on $F_0$: a
+Weibull hazard $h(t) = \lambda\rho(\lambda t)^{\rho-1}$ is monotone in $t$
+for every $\rho \ne 1$ and constant only at $\rho=1$; it can never turn
+over, so it is structurally incapable of representing a bathtub or a
+multimodal hazard, regardless of how much data is available to estimate
+$\beta$. The log-normal AFT is more flexible (a hump-shaped hazard) but
+is likewise unimodal and cannot represent a bathtub.
+
+\citet{royston2002}'s flexible parametric model relaxes the shape
+constraint by modelling the log cumulative hazard as a restricted cubic
+spline in $\log t$ rather than a fixed parametric form,
+\[
+  \log H(t\mid x) = s(\log t;\, \gamma) + \beta^\top x,
+\]
+with knots placed at quantiles of the observed event log-times. This is
+the strongest classical shape-flexible baseline available and the natural
+comparator for any deep flexible-hazard model; because the spline is a
+free-form nonparametric object rather than a probability-generating
+transform of a single latent variable, however, it does not carry the
+location-scale AFT interpretation of Eq.~\eqref{eq:aft} unless further
+restricted, and its flexibility is capped by a small, hand-chosen number
+of degrees of freedom rather than learned end-to-end from covariates.
+\citet{opatha2024} provide the classical anchor and direct motivation for
+the present work: a careful simulation study mapping Cox-versus-Weibull-AFT
+performance across sample size, censoring proportion, censoring type
+(Type~I administrative vs.\ Type~III random), and hazard shape, showing that
+the AFT dominates specifically at small sample sizes and under monotone
+increasing hazards, and that the ranking is sensitive to exactly the design
+factors this study extends to deep learning. Their study, however, was
+confined to two classical models and to Harrell's concordance, leaving
+open where deep, flexible-density models sit on the same map, and under
+which modern calibration instruments (Section~\ref{sec:evaluation}) --
+the question this work takes up.
+
+\section{Machine-learning survival models and the neutral-comparison evidence}
+\label{sec:ml}
+
+Random Survival Forests \citep{ishwaran2008rsf} and gradient-boosted
+Cox variants extend Cox regression's covariate flexibility -- nonlinearity,
+interaction detection -- without positing a hazard family, at the cost of a
+smooth conditional density: RSF's native output is an ensemble-averaged
+Nelson--Aalen-type cumulative hazard estimate, again a step function, with
+only weak calibration guarantees. The decisive fact reshaping how any
+gain from this literature must be argued, however, is empirical rather
+than architectural: \citet{burk2024neutral}, in the largest neutral
+comparison to date (19 methods across 34 datasets, all methods tuned
+under a common protocol so that no method is home-advantaged), find that
+\emph{no method -- including every machine-learning and deep-learning
+method surveyed -- significantly outperforms plain Cox regression in
+discrimination on standard low-dimensional tabular data}. This finding is
+the single most important piece of evaluation evidence this review draws
+on: it means a flexible deep survival model's case cannot rest on
+concordance improvements, which the neutral evidence says are not there to
+be found on this class of data. The contribution this literature is
+capable of making instead is calibration and distributional fidelity --
+whether the \emph{shape} of the predicted individual survival curve,
+not merely its rank ordering, matches the truth -- and that reframing
+directly motivates the evaluation design in Section~\ref{sec:evaluation}
+and the choice, throughout this work, never to lead with a concordance
+claim.
+
+\section{Deep learning survival models}
+\label{sec:dl}
+
+Deep architectures for survival analysis divide naturally into three
+families by what structural assumption they retain from the classical
+models above.
+
+\subsection{Cox-family deep models}
+DeepSurv \citep{katzman2018deepsurv} is the most direct deep extension of
+Cox regression: it replaces the linear predictor $\beta^\top x$ inside the
+Cox partial likelihood with a feed-forward network, gaining nonlinearity
+and interaction modelling but retaining every structural limitation of the
+Cox model itself -- proportional hazards, a Breslow-estimated baseline, no
+smooth density. Cox-Time \citep{kvamme2019coxtime} generalizes further by
+allowing time--covariate interaction terms, which lets the model escape
+strict proportionality, but the estimator still factorizes through a
+shared, non-parametrically estimated baseline hazard scaled by a
+covariate function, so the output remains a step-function survival curve
+fit by partial, not full, likelihood.
+
+\subsection{Discrete-time distribution models}
+A second family discretizes time onto a grid and fits a
+distribution over grid cells directly, sidestepping the Cox
+baseline-hazard machinery entirely. DeepHit \citep{lee2018deephit} places
+a softmax output over a fixed set of time bins, giving a genuine
+per-subject probability mass function (and natively handling competing
+risks); DRSA \citep{ren2019drsa} predicts the same object
+autoregressively, one grid step at a time; PC-Hazard
+\citep{kvamme2021pchazard} instead models a piecewise-constant hazard on
+each grid interval, which admits a proper (if piecewise) likelihood
+derivation; SurvTRACE \citep{wang2022survtrace} replaces the covariate
+encoder with a transformer but keeps the discrete-hazard output head. All
+four are shape-free \emph{within the resolution of the chosen grid}, and
+all four inherit the same structural cost: the predicted survival curve is
+a step function by construction, so density and hazard exist only as
+grid-cell probabilities (not evaluable at an arbitrary $t$), and quantiles
+-- including the median survival time used for concordance -- are only
+available up to the grid's bin width. Grid placement is consequently not a
+cosmetic choice but a bias--variance trade-off baked into the estimator:
+a coarse grid discards temporal resolution the data may support; a fine
+grid multiplies the number of estimated parameters and can destabilize
+training under heavy censoring, where many bins receive few or no events.
+We refer to this as the discretization horn throughout this work.
+
+\subsection{Continuous-time flexible models}
+A smaller family attempts to retain continuous time without discretizing.
+SODEN \citep{tang2022soden} generalizes the DeepSurv/DeepHit family
+through a system of ordinary differential equations whose solution
+implicitly defines the hazard, buying flexibility at the cost of a
+numerically delicate, implicitly-defined density that must be solved for
+at every evaluation. SuMo-net \citep{rindt2022sumonet} instead
+parameterizes $S(t\mid x)$ directly with a network constrained to be
+monotone decreasing in $t$, trained with a proper scoring rule; this gives
+smooth, continuous survival curves, but the corresponding density and
+hazard functions exist only through numerical differentiation of the
+learned monotone map, which is not exact and amplifies estimation noise
+precisely in the tails where hazard-shape questions (bathtub, multimodal)
+are decided.
+
+\section{Deep accelerated failure time models: a critical synthesis}
+\label{sec:deepaft}
+
+The AFT form's modern revival under deep learning is real, but -- we argue
+after close reading of each contribution -- structurally incomplete in a
+single, consistent way. \emph{deepAFT} \citep{norman2024deepaft} places a
+deep network on the location term $\mu(x)$ of Eq.~\eqref{eq:aft} while
+leaving the residual distribution unspecified, and estimates the model by
+Buckley--James iterative imputation, inverse-probability-of-censoring
+weighting (IPCW), or a rank/transformation loss rather than by maximizing
+a likelihood. This choice is consequential in exactly the setting this
+work is designed to stress: IPCW-based estimators are well known to
+become unstable as the censoring proportion grows, because the inverse
+weights blow up as the censoring-survival estimate approaches zero, and
+Buckley--James imputation similarly degrades as the fraction of
+uninformative (heavily censored) observations increases. The resulting
+survival curves are Kaplan--Meier-rescaled step functions, not smooth
+conditional densities. DeepR-AFT \citep{kim2022deepraft} trains with a
+Gehan-type rank loss, which supplies a valid concordance-style ranking
+objective but, being rank-based, carries no information about the scale
+or shape of the predicted distribution and cannot produce a calibrated
+density at all. KAN-AFT \citep{francis2025kanaft} substitutes a
+Kolmogorov--Arnold network for the covariate map, trading the deep
+network's opacity for (claimed) symbolic interpretability of $\mu(x)$,
+but inherits the same likelihood-free estimation as deepAFT. The most
+recent likelihood-free entrant identified in our updated sweep,
+\emph{GRAFT} \citep{graft2026}, follows the identical pattern -- a
+gated residual AFT architecture trained with a concordance-aligned rank
+loss and post-hoc calibration correction -- and \emph{DART}
+\citep{dart2023} likewise trains a deep AFT with a Gehan-type rank
+objective; both therefore occupy exactly the same cell of the taxonomy as
+deepAFT/DeepR-AFT/KAN-AFT and do not alter the gap analysis below.
+
+Two contributions do retain the likelihood, but at the cost of the
+residual law's flexibility. Neural Conditional Event Time models
+\citep{engelhard2020neuralcet} -- Neural-CET -- place neural networks on
+\emph{both} the location $\mu(x)$ and the scale $\sigma(x)$ and estimate
+by the exact censored likelihood, which is structurally the closest prior
+work to the present model; the residual law is nonetheless fixed to a
+standard Gaussian, so the model is, in the terminology of
+Eq.~\eqref{eq:aft}, a log-normal AFT with a neural covariate map -- shape
+constrained to the log-normal's single hump, unable to represent a
+bathtub or a multimodal hazard by construction, whatever the capacity of
+the covariate network. This is precisely the ablation this study
+isolates as \emph{FlowSurv-Gauss}: freeze the flow to the identity and fix
+the base law to Gaussian, and Neural-CET's specification is recovered
+exactly, which lets the empirical study attribute any performance gap
+directly to the residual flow rather than to encoder capacity or training
+protocol differences. DKAFT \citep{wu2021dkaft} similarly retains the
+likelihood but represents the residual through a Gaussian-process output
+layer -- again log-normal in effect. \citet{ranganath2016deepsurv}'s deep
+exponential family parameterizes Weibull event times through a deep
+generative model, retaining the Weibull's monotone-hazard restriction
+even as the covariate mapping deepens.
+
+Taken together, the deep AFT literature exhibits a consistent trade-off:
+\emph{every published deep AFT model that we are aware of either keeps
+the exact censored likelihood but fixes the residual family to a
+single-mode distribution (Gaussian in Neural-CET/DKAFT, Weibull in
+Ranganath et al.), or frees the covariate map and the estimation
+objective but abandons the likelihood entirely (deepAFT, DeepR-AFT,
+KAN-AFT, GRAFT, DART).} No prior work combines a free, learned residual
+law with exact full-likelihood estimation inside the AFT form; this is
+the specific gap FlowSurv-AFT is designed to close.
+
+\section{Generative and flow-based survival models}
+\label{sec:generative}
+
+\subsection{Mixture-based densities}
+Deep Survival Machines \citep{nagpal2022dsm} -- DSM -- parameterizes a
+finite mixture of $K$ Weibull or log-normal components, with an MLP
+mapping covariates to per-component mixture weights and parameters, and
+is trained by the exact censored likelihood; it is consequently the
+standard fully-parametric, exact-likelihood baseline against which this
+work benchmarks throughout. Deep Cox Mixtures \citep{nagpal2021coxmixtures}
+and the earlier DeepWeiSurv/DPWTE line
+\citep{bennis2020deepweisurv,bennis2021dpwte} are architectural
+predecessors and variants of the same idea. Survival MDN
+\citep{han2022survivalmdn} instead places a Gaussian mixture on a
+transformed time axis, deriving the survival function by an explicit
+change of variables. The shared limitation, acknowledged directly by the
+Survival MDN authors themselves, is that every one of these constructions
+builds a multimodal or bathtub-shaped hazard, if at all, out of a
+\emph{finite sum of unimodal, monotone-or-hump-shaped primitives}: with
+few mixture components the model cannot represent a genuine bathtub;
+with many components the number of mixture weights to fit under
+censoring grows, $K$ becomes a fragile hyperparameter, and the
+resulting hazard, while technically flexible in the infinite-$K$ limit, is
+not a \emph{learned} shape in the same sense a normalizing flow's
+residual law is -- it is a discrete architectural choice made in advance
+of seeing how much flexibility the data actually needs.
+
+\subsection{Adversarial generators}
+\citet{chapfuwa2018adversarial} and the subsequent survival-function
+matching formulation \citep{chapfuwa2021sfm}, together with related work
+by Zhou et al., generate event times through an adversarial (GAN-style)
+mechanism, which in principle imposes no shape restriction on the
+generated distribution at all. The cost is that adversarial training
+supplies no tractable likelihood and no closed-form survival function --
+both must be estimated empirically from generated samples -- and GAN
+training is well documented to be unstable relative to direct
+likelihood maximization, a particular liability under the class imbalance
+that heavy censoring induces.
+
+\subsection{Normalizing flows for survival: the direct lineage}
+\label{sec:flows}
+The line of work most directly antecedent to FlowSurv-AFT applies
+normalizing flows -- invertible, density-tracking transformations of a
+simple base distribution -- to survival times. \citet{miscouridou2018} is
+the earliest instance we are aware of: a discrete invertible transform of
+a Weibull base distribution, but embedded inside a latent-variable model
+trained by black-box variational inference, so the fitted objective is an
+evidence lower bound (ELBO), not the exact right-censored likelihood that
+the present work and its comparators require.
+
+\citet{ausset2021flows} (elaborated in the accompanying doctoral thesis,
+\citealp{ausset2021thesis}) is the closest prior work and the paper this
+study differentiates most carefully against. Ausset et al.\ condition a
+\emph{continuous} normalizing flow -- a neural ordinary differential
+equation in the FFJORD family -- on covariates and on log survival time,
+and train it with the exact right-censored likelihood, remarking in
+passing that the construction "can be seen as a generalization of the AFT
+model." Having examined the thesis in detail, we verify the following.
+First, every evaluation of the density or the survival function requires
+solving an initial-value ODE numerically; there is no closed form for
+$f(t\mid x)$, $S(t\mid x)$, a quantile, or a sample, and the discretization
+error of the ODE solver becomes a further, uncontrolled source of
+approximation error layered on top of the statistical estimation error.
+Second, the thesis reviews discrete coupling and autoregressive
+normalizing flows as alternatives and explicitly sets them aside in favour
+of the continuous formulation, so the analytic-inverse route this work
+takes was a known, considered, and declined alternative rather than an
+oversight. Third, the empirical evaluation is comparatively narrow: one
+multimodal synthetic scenario at a single, fixed 80\% censoring level, with
+Harrell's C as the only reported metric -- no hazard-shape recovery
+error against ground truth, no calibration analysis (D-calibration, ICI,
+or any proper scoring rule), and no controlled sweep over censoring
+proportion or censoring mechanism. Fourth, and most directly relevant to
+the interpretability claim of the present work, the "generalization of
+the AFT" remark is a one-sentence framing aside: the fitted model has no
+explicit $\mu(x)/\sigma(x)$ decomposition and reports no time-ratio
+quantity, so no acceleration-factor interpretation is extracted or
+validated anywhere in the thesis. FlowSurv-AFT differs from this work
+along exactly these four axes: it is bidirectionally exact (no ODE
+solver, closed-form in both directions), it carries an explicit,
+validated AFT decomposition, and it is evaluated by the hazard-shape and
+calibration protocol Ausset et al.\ do not report.
+
+The second closest work is concurrent and, at the time of writing,
+unpublished: \citet{licai2026}, under review for STAI-X 2026. Li \& Cai
+build \emph{discrete monotone tanh-sum flows} directly on log event time,
+trained with an exact forward (density and survival) right-censored
+likelihood, augmented by a Soft--Nelson--Aalen Wasserstein regularizer and
+a shared-latent extension addressing informative censoring. Having
+reviewed the submitted manuscript under the project's pre-registered
+novelty-sweep protocol, we verify three properties that jointly
+distinguish it from FlowSurv-AFT. First, the tanh-sum transform has no
+closed-form inverse: every quantile evaluation or sample draw requires an
+iterative 40-step numerical bisection procedure, so while the
+\emph{forward} (data-to-likelihood) direction is exact and closed-form,
+the \emph{reverse} direction that bidirectional exactness requires is not
+-- this is the concurrent work's structural analogue of Ausset et al.'s
+ODE-solver dependency, arrived at from the opposite (discrete rather than
+continuous) direction. Second, the transform's knot parameters are
+themselves general functions of the covariates $x$ rather than entering
+through a location-scale form as in Eq.~\eqref{eq:aft}, so the map is not
+of AFT type and admits no acceleration-factor interpretation. Third, the
+reported simulation study uses only standard parametric distribution
+families for the data-generating process, with no bathtub, multimodal, or
+crossing-hazard scenario, no calibration metric, and no controlled
+censoring-proportion sweep. The distribution-matching regularizer and the
+informative-censoring extension are genuine contributions in their own
+right and are cited here as complementary, not competing, technical
+devices; the empty methodological cell this study occupies -- exact
+bidirectional tractability \emph{and} an explicit AFT decomposition
+\emph{and} the hazard-shape/calibration-across-censoring study -- remains
+open in this concurrent manuscript as reviewed.
+
+\subsection{Transformation models: the statistical-equivalence view}
+A parallel statistical literature arrives at essentially the same object
+-- a flexible, invertible, monotone transform of a latent variable,
+trained by a censored likelihood -- from distributional regression rather
+than from the normalizing-flow literature. Deep conditional
+transformation models \citep{baumann2021transformation} and DRIFT
+\citep{kolb2024drift} establish the formal equivalence between a
+one-dimensional conditional normalizing flow and a flexible
+distributional-regression model fit by a censored likelihood: these are,
+statistically, the same estimator viewed through a different vocabulary,
+and we cite them as the relevant related work from that vocabulary rather
+than as a distinct methodological camp. A further recent entrant in this
+family identified in the updated sweep, \citet{yuan2025transformation},
+develops an interval-censored partially-linear transformation model fit
+by monotone-spline sieve maximum likelihood combined with a deep neural
+covariate map; it sits in the same transformation-model camp as
+DRIFT/deep conditional transformation models -- flexible and
+likelihood-based, but not cast in AFT location-scale form and not
+evaluated for hazard-shape recovery across a censoring-proportion sweep.
+
+\subsection{Dependent censoring: an explicit scope boundary}
+\citet{gharari2023copula} address the harder and distinct problem of
+\emph{dependent} (informative) censoring using deep copula models with
+identifiability guarantees. Every model discussed in this review,
+including FlowSurv-AFT, assumes censoring is independent of the event
+time given covariates; dependent censoring is explicitly out of scope
+here and is noted as a limitation (Section~\ref{sec:synthesis}), with
+Gharari et al.\ as the relevant reference point for extending this line
+of work in that direction.
+
+\subsection{Adjacent 2025--2026 landscape}
+A final literature sweep, frozen with the project's pre-registration on
+2026-08-04, searched arXiv, OpenReview, and Semantic Scholar for any
+post-2024 work at the intersection of normalizing flows, splines, and
+survival analysis. Beyond \citet{ausset2021flows} and the concurrent
+\citet{licai2026}, no spline-flow survival model and no new
+exact-likelihood flow competitor was found. The nearest adjacent items --
+included here for completeness and to substantiate that the sweep was
+thorough rather than narrowly targeted -- are: \citet{lticl2026}, a
+conditional normalizing-flow head for right-censored \emph{lead-time
+forecasting} in an industrial supply-chain, in-context-learning setting,
+sharing the "conditional flow under right censoring" idea but with no AFT
+decomposition, no spline flow, and evaluated by CRPS in a non-clinical,
+non-reliability domain; \citet{yin2025multimodal}, which uses a
+normalizing flow for cross-modal representation alignment in multimodal
+whole-slide-image survival prediction rather than as the event-time
+model itself; \citet{graft2026} and \citet{dart2023}, already placed in
+the likelihood-free deep AFT camp above (Section~\ref{sec:deepaft});
+\citet{yuan2025transformation}, placed in the transformation-model camp
+above; \citet{cennsurv2025}, a neural network for exposure-lag survival
+modelling -- a distinct problem formulation; \citet{gregorio2023}, a
+Royston--Parmar-style spline neural network for heterogeneous
+treatment-effect estimation rather than a general-purpose survival model;
+and \citet{eguchi2026}, a monograph on flow matching for statistical
+inference with a survival-analysis chapter, cited here as context. None
+of these alters the gap analysis of Section~\ref{sec:synthesis}.
+
+\section{Evaluation methodology: instruments and pitfalls}
+\label{sec:evaluation}
+
+The metrics used to evaluate a survival model shape, in practice, which
+methodological trade-offs look favourable, so the evaluation literature is
+itself part of the argument this study makes. \textbf{Discrimination.}
+Harrell's concordance index is ubiquitous but is known to be
+censoring-dependent (it is biased under heavy censoring because
+concordance can only be assessed on pairs where the earlier time is
+observed); Uno's C \citep{uno2011} corrects this with inverse-probability
+weighting, at the cost of requiring a consistent estimate of the
+censoring distribution. \citet{sonabend2022chacking} names and formalizes
+the risk this study takes care to avoid -- \emph{C-hacking}, reporting
+whichever of several concordance variants is most favourable to the
+proposed method -- and recommends pre-specifying a single variant; this
+study reports Uno's C only, fixed by pre-registration before any
+experiment was run, and explicitly declines to claim concordance
+superiority as a headline result, consistent with the neutral-comparison
+evidence of Section~\ref{sec:ml}. \textbf{Overall accuracy.} The
+Integrated Brier Score \citep{graf1999ibs}, with the IPCW correction of
+\citet{gerds2006}, summarizes squared-error calibration and discrimination
+jointly over a time horizon. \textbf{Calibration.} D-calibration and
+1-calibration \citep{haider2020} test whether the predicted survival
+probabilities are distributionally correct (a 10\% predicted survival
+probability should be observed roughly 10\% of the time, marginally); the
+integrated calibration index \citep{austin2020ici} quantifies calibration
+error at a fixed horizon via a smoothed calibration curve; X-CAL
+\citep{goldstein2020xcal} proposes calibration as an explicit,
+differentiable training objective rather than only a post-hoc diagnostic.
+\textbf{Position papers.} \citet{lillelund2025} argue directly that the
+metric reported must be matched to the claim being made and that the
+censoring assumption underlying each metric should be stated explicitly
+-- a discipline this study's pre-registration is designed to enforce
+mechanically. \citet{pearce2022benchmark} formalize the simulation-rigor
+protocol this study's design follows: synthetic data with synthetic,
+controllable censoring for ground-truth recovery claims, combined with
+real data under real (uncontrolled) censoring for external validity, over
+repeated splits rather than a single train/test division. Finally,
+\citet{burk2024neutral} (already introduced in Section~\ref{sec:ml}) is
+the empirical anchor that converts all of the above from methodological
+best practice into a substantive constraint on what this study is
+entitled to claim: because large-scale neutral evidence finds no
+discrimination advantage for flexible or deep methods on standard tabular
+data, the calibration and hazard-shape-recovery instruments reviewed in
+this section -- not concordance -- are the evidentiary standard this
+study is held to.
+
+Two further methodological references are technical rather than
+survival-specific but underpin the model directly. \citet{durkan2019nsf}
+introduce the rational-quadratic spline coupling transform whose
+monotone, per-bin construction gives FlowSurv-AFT's residual flow its
+bidirectional exactness: forward and inverse maps, and their Jacobian
+determinants, are all available in closed form within each spline bin,
+with identity behaviour imposed outside a bounded domain. \citet
+{wiegrebe2024review} and \citet{drysdale2022survset} are general
+reference works -- a broad review of deep learning for survival analysis
+and an open repository of benchmark time-to-event datasets, respectively
+-- cited for context rather than as direct methodological comparators.
+
+\section{Synthesis: the research gap}
+\label{sec:synthesis}
+
+The literature reviewed above separates cleanly into four camps, each
+camp surrendering exactly one of the four properties a model must have to
+combine flexibility, tractability, interpretability, and correct
+likelihood-based estimation under censoring. Table~\ref{tab:gap} makes
+this explicit.
+
+\begin{table}[h!]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{3.4cm}p{1.9cm}p{2.5cm}p{1.5cm}p{1.9cm}p{2.7cm}}
+\toprule
+\textbf{Camp} & \textbf{Smooth, shape-free density} & \textbf{Exact $f,S$, quantiles, sampling (no solver/grid)} & \textbf{AFT interp.} & \textbf{Exact censored likelihood} & \textbf{Shape/calibration study across censoring} \\
+\midrule
+Classical AFT / Royston--Parmar
+  & \ding{55}\,(restricted shapes)
+  & \checkmark
+  & \checkmark
+  & \checkmark
+  & partial (\citealp{opatha2024} -- classical models only) \\
+Discrete-time DL (DeepHit family)
+  & \ding{55}\,(grid steps)
+  & \ding{55}
+  & \ding{55}
+  & \checkmark\,(discrete)
+  & \ding{55} \\
+Deep AFT (deepAFT, DeepR-AFT, KAN-AFT, GRAFT, DART)
+  & \ding{55}\,(no density)
+  & \ding{55}
+  & \checkmark
+  & \ding{55}
+  & \ding{55} \\
+Generative (DSM/MDN; Ausset; Li \& Cai)
+  & \checkmark\,/\,partial
+  & \ding{55}\,(mixture-shape limits; ODE solver; bisection inverse)
+  & \ding{55}
+  & \checkmark
+  & \ding{55} \\
+\bottomrule
+\end{tabular}
+\caption{The four-camp taxonomy of the survival-modelling literature
+reviewed in this section. Each camp satisfies at most four of the five
+properties; the conjunction of all five (rightmost four columns plus a
+learned, shape-free density) is, to our knowledge, unoccupied.}
+\label{tab:gap}
+\end{table}
+
+\emph{The empty cell is the conjunction.} FlowSurv-AFT is constructed to
+occupy it directly, by combining (i) an explicit AFT location-scale
+decomposition, $\log T = \mu(x) + \sigma(x)\eps$, with (ii) a conditional
+rational-quadratic spline residual flow for $\eps$ -- analytically
+invertible in both directions, with closed-form Jacobians, following
+\citet{durkan2019nsf} -- trained by (iii) the exact right-censored full
+likelihood (density term for events, survival term for censored
+observations, with no inverse-probability weighting, no partial
+likelihood, and no time discretization), and validated by (iv) the first,
+to our knowledge, systematic hazard-shape-recovery and calibration study
+conducted across a controlled grid of censoring proportion and censoring
+mechanism, extending the classical simulation design of
+\citet{opatha2024} into this flexible-density setting. Sections
+\ref{sec:deepaft} and~\ref{sec:flows} establish that no prior
+contribution combines properties (i)--(iii); this section's synthesis,
+together with the frozen 2026-08-04 sweep of Section~\ref{sec:generative}
+(``Adjacent 2025--2026 landscape''), establishes that this remains true as
+of the most recent literature check preceding the pre-registration of
+this study's hypotheses and confirmatory contrasts.
+
+\bibliographystyle{apalike}
+\bibliography{references}
+
+\end{document}
