@@ -183,6 +183,17 @@ class FlowSurvAFT(nn.Module):
         """Concordance risk score: negative median lifetime -Q(0.5|x) (higher = riskier)."""
         return -self.quantile(0.5, x).squeeze(0)
 
+    def location(self, x: Tensor) -> Tensor:
+        """mu(x), the AFT acceleration surface (Methodology Sec. 2.2, Sec. 5).
+
+        exp(mu(x_a) - mu(x_b)) is the time-ratio interpretation used by the
+        interpretability analysis; this is the shared primitive both that
+        analysis and any diagnostic code should read mu(x) through.
+        """
+        x = torch.as_tensor(x)
+        mu, _sigma, _params = self.encoder(x.reshape(-1, x.shape[-1]))
+        return mu.reshape(x.shape[:-1])
+
     def forward(self, t: Tensor, d: Tensor, x: Tensor) -> Tensor:
         """Per-observation right-censored log-likelihood contribution."""
         log_f = self.log_density(t, x)
