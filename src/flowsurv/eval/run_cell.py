@@ -24,6 +24,7 @@ import time
 import torch
 
 from ..baselines import METHODS
+from ..baselines.flowsurv_wrappers import _FlowSurvWrapper
 from ..data import (
     REAL_DATASETS,
     CellConfig,
@@ -159,8 +160,10 @@ def _fit_config(method_name: str, method, tuner: FrozenTuner | None, cell, rep: 
     config: dict = {}
     if tuner is not None and getattr(method, "is_deep", False):
         config = dict(tuner.tuned_config(method_name, cell, rep=rep))
-    # FlowSurv wrappers map hypers onto TrainConfig, which owns `device`.
-    if method_name.startswith("flowsurv"):
+    # _FlowSurvWrapper subclasses (flowsurv_aft/gauss, ausset_cnf) map hypers
+    # onto TrainConfig, which owns `device`; name-prefix matching missed
+    # ausset_cnf and silently left it on the wrapper's CPU default.
+    if isinstance(method, _FlowSurvWrapper):
         config.setdefault("device", device)
     return config
 
