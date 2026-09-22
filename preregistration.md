@@ -93,6 +93,18 @@ All three interventions converged on the same negative result, taken as sufficie
 
 **Consequence for the paper's framing.** Document 1's objective O2 and the differentiator claims are updated (see `docs/01_Introduction_Literature_Aims.md`, same date) to state the flexibility claim as scoped to residual-shape and nonlinear-location hazard recovery, not as a blanket claim across all non-standard shapes — a more defensible claim than the original, and one that delineates exactly where an AFT-decomposed flow helps and where a mixture model remains preferable, rather than asserting a universal win.
 
+**Deviation 2 (2026-09-22): fixed nonzero default penalizer for the lifelines classical baselines.**
+
+**What was pre-registered.** Methodology §4/§6 specifies Cox-PH, Weibull-AFT, and log-normal AFT as baselines fit by maximum likelihood, with `penalizer` listed as a tunable hyperparameter (candidate grid {0.0, 0.01, 0.1}) but with no default value fixed for the untuned (`is_deep=False`) code path that all three classical methods run through.
+
+**What was found.** In the Phase 5 pilot, the classical baselines' fit used `penalizer=0.0` (unregularized MLE) unconditionally, since the frozen-tuning gate (Implementation Plan Phase 4) only fires for `is_deep=True` methods. At small n and low censoring, several Weibull-AFT and Cox-PH fits produced extreme, numerically unstable hazard estimates (traced to the fitted survival curve underflowing to float zero across consecutive points on the evaluation grid, driving the predicted hazard to the `np.clip(h, 0, 1e3)` ceiling while the true hazard was on the order of 30). This is a known small-sample behavior of unregularized parametric/semiparametric MLE, not a metric or implementation bug.
+
+**Deviation.** `src/flowsurv/baselines/classical.py` now applies a fixed default `penalizer=0.01` (module constant `_DEFAULT_PENALIZER`) to `CoxPH`, `WeibullAFT`, and `LogNormalAFT` whenever no explicit `penalizer` is supplied. The value is fixed a priori (the smallest nonzero value already present in the pre-registered tuning grid), applied identically across every cell, and is not selected or adjusted based on any Phase 5 or Phase 6 outcome. It remains overridable by an explicit `penalizer` kwarg, so nothing about the tuning-space contract for a future tuned run changes.
+
+**Why this is not post-hoc cherry-picking.** The change is motivated purely by a numerical-stability failure mode identified in the pilot before any Phase 6 results existed, applies uniformly to all cells and all three affected methods regardless of scenario or direction of effect, and does not touch the deep-method frozen-tuning protocol (Deviation 1) or any evaluation metric. It is applied prospectively to Phase 6, not retroactively reinterpreted from Phase 6 results.
+
+**Consequence for the paper's framing.** Classical-baseline HRE/C-index/IBS values reported from Phase 6 onward reflect a mildly regularized fit; this is noted in the Methods section as a deviation from unregularized textbook MLE, with the rationale given above. The Phase 5 pilot's classical-baseline numbers (already reported/archived) reflect the unregularized fit and are not retroactively recomputed; any pilot-vs-Phase-6 comparison for classical baselines should account for this.
+
 ---
 
 ## Appendix A — Final novelty sweep (2026-08-04)
