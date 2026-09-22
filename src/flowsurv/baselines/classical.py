@@ -24,6 +24,10 @@ from torch import Tensor
 
 from .common import FitResult, SurvivalMethod, as_output, density_from_survival, hazard_from_survival, interp_surv, to_numpy
 
+# Fixed (not tuned per cell) ridge penalty applied by default to all lifelines
+# regression baselines -- see Deviation 2, preregistration.md Sec. 8.
+_DEFAULT_PENALIZER = 0.01
+
 
 class _LifelinesMethod(SurvivalMethod):
     """Shared harness for lifelines regression models."""
@@ -127,7 +131,9 @@ class CoxPH(_LifelinesMethod):
     def _fit_estimator(self, df: pd.DataFrame, **hyper) -> Any:
         from lifelines import CoxPHFitter
 
-        penalizer = hyper.get("penalizer", 0.0)
+        # Default penalizer is nonzero (Deviation 2, prereg Sec. 8): unregularized
+        # MLE diverges at small n / low censoring, not tuned per cell.
+        penalizer = hyper.get("penalizer", _DEFAULT_PENALIZER)
         model = CoxPHFitter(penalizer=penalizer)
         model.fit(df, duration_col=self._duration_col, event_col=self._event_col)
         return model
@@ -157,7 +163,7 @@ class WeibullAFT(_LifelinesMethod):
     def _fit_estimator(self, df: pd.DataFrame, **hyper) -> Any:
         from lifelines import WeibullAFTFitter
 
-        model = WeibullAFTFitter(penalizer=hyper.get("penalizer", 0.0))
+        model = WeibullAFTFitter(penalizer=hyper.get("penalizer", _DEFAULT_PENALIZER))
         model.fit(df, duration_col=self._duration_col, event_col=self._event_col)
         return model
 
@@ -187,7 +193,7 @@ class LogNormalAFT(_LifelinesMethod):
     def _fit_estimator(self, df: pd.DataFrame, **hyper) -> Any:
         from lifelines import LogNormalAFTFitter
 
-        model = LogNormalAFTFitter(penalizer=hyper.get("penalizer", 0.0))
+        model = LogNormalAFTFitter(penalizer=hyper.get("penalizer", _DEFAULT_PENALIZER))
         model.fit(df, duration_col=self._duration_col, event_col=self._event_col)
         return model
 
