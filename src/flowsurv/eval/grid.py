@@ -223,6 +223,9 @@ def _parse_reps(spec: str) -> list[int]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--scenario", nargs="*", default=None, help="scenario filter, e.g. S2 S3")
+    parser.add_argument("--n", nargs="*", type=int, default=None, help="sample-size filter, e.g. 200 1000")
+    parser.add_argument("--censoring", nargs="*", type=float, default=None, help="censoring %% filter (0-100), e.g. 0 20")
+    parser.add_argument("--ctype", nargs="*", default=None, choices=["I", "III"], help="censoring type filter, e.g. I")
     parser.add_argument("--shard", type=int, nargs=2, metavar=("K", "N"), default=(0, 1))
     parser.add_argument("--methods", nargs="*", default=None)
     parser.add_argument("--reps", type=_parse_reps, default=range(1, 101), help="e.g. 1-100")
@@ -246,10 +249,23 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     cells = None
-    if args.scenario:
-        cells = [c for c in default_grid() if c.scenario in set(args.scenario)]
+    if args.scenario or args.n or args.censoring is not None or args.ctype:
+        cells = list(default_grid())
+        if args.scenario:
+            cells = [c for c in cells if c.scenario in set(args.scenario)]
+        if args.n:
+            cells = [c for c in cells if c.n in set(args.n)]
+        if args.censoring is not None:
+            # cell.censoring is a fraction (0.0-1.0); CLI takes percent (0-100)
+            wanted = {round(c / 100.0, 4) for c in args.censoring}
+            cells = [c for c in cells if round(c.censoring, 4) in wanted]
+        if args.ctype:
+            cells = [c for c in cells if c.censoring_type in set(args.ctype)]
         if not cells:
-            raise SystemExit(f"no cells match scenario filter {args.scenario}")
+            raise SystemExit(
+                f"no cells match filters: scenario={args.scenario} n={args.n} "
+                f"censoring={args.censoring} ctype={args.ctype}"
+            )
 
     run_grid(
         cells=cells,
