@@ -17,6 +17,7 @@ import time
 import warnings
 from typing import Any
 
+import joblib
 import numpy as np
 import pandas as pd
 import torch
@@ -258,15 +259,18 @@ class RandomSurvivalForest(SurvivalMethod):
                 n_estimators=hyper.get("n_estimators", 500),
                 min_samples_split=hyper.get("min_samples_split", 10),
                 min_samples_leaf=hyper.get("min_samples_leaf", 5),
-                # n_jobs=1, not -1: joblib's process-based parallelism was
-                # implicated in unbounded memory growth (~20GB) across a long
-                # sequence of RSF fits in Phase 6 (2026-09-23); a single
-                # process per fit trades speed for not compounding workers.
-                # random_state and n_estimators are unaffected -- same fit.
-                n_jobs=1,
+                n_jobs=-1,
                 random_state=seed,
             )
-            self.model.fit(x_np, y)
+            # joblib's default process-based ("loky") backend duplicates the
+            # dataset into each worker and was implicated in unbounded memory
+            # growth (~20GB) across a long sequence of RSF fits in Phase 6
+            # (2026-09-23); n_jobs=1 fixed that but made low-censoring,
+            # n=5000 fits (more events -> more split evaluations) 10x+
+            # slower. Threading shares memory (no per-worker duplication),
+            # keeping the speed of n_jobs=-1 without the leak.
+            with joblib.parallel_backend("threading"):
+                self.model.fit(x_np, y)
             converged = True
             info: dict = {}
         except Exception as e:
