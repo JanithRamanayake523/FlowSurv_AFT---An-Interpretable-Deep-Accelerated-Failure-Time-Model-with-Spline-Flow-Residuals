@@ -107,12 +107,14 @@ All scenarios use p = 10 covariates, x ~ N(0, I), 5 active with β = (0.8, −0.
 | Class | Methods |
 |---|---|
 | Classical | Cox PH; Weibull AFT; log-normal AFT; Royston–Parmar flexible parametric (M-splines, df = 3–5 tuned) |
-| ML | Random Survival Forest (500 trees, tuned nodesize/mtry) |
+| ML | Random Survival Forest (500 trees, `min_samples_split`/`min_samples_leaf` at package defaults, not tuned — see rationale below) |
 | DL — discriminative | DeepSurv; DeepHit |
 | DL — distributional | DSM (Weibull mixture, K ∈ {2,4,8} tuned) |
 | Ablations (ours) | **FlowSurv-Gauss** (identity flow, Gaussian residual ≈ Neural CET); **FlowSurv-AFT** (full); optional reimplemented **Ausset-CNF** (continuous FFJORD flow) on a subset of cells to quantify the discrete-flow advantage in accuracy and wall-clock |
 
 Identical tuning budget (30 random configs, inner validation) for every DL method; classical methods per package defaults with documented tuning where applicable.
+
+**Why classical methods are not put through the same 30-config search.** This is a deliberate asymmetry, not an oversight, and follows the convention of the methods whose original papers we compare against (DeepSurv, DeepHit, DSM all tune their own network but report classical baselines at standard/default settings). Three reasons: (1) the fairness constraint that matters for the confirmatory hypotheses (H1–H3) is *identical tuning budget across DL methods*, since FlowSurv-AFT is compared against DSM/DeepHit/DeepSurv, not against Cox or RSF, under H1–H3; (2) a 30-config search selected on only 5 replications' validation folds is already a noisy signal (small-sample max-over-30-noisy-estimates) — extending that same noisy selection to classical methods with few genuinely impactful hyperparameters would not meaningfully improve them and would not change the confirmatory comparisons; (3) it keeps the classical baselines representative of how they are used in standard practice, which is the fairer comparison point for a methods paper (a reader asking "how does this compare to what practitioners actually run" is better served by package defaults than by an unusually well-tuned Cox model). The one classical exception is Royston–Parmar, whose df ∈ {3,4,5} spline-flexibility choice is a built-in model-selection step internal to the method itself (via validation NLL), not part of the external grid-tuning system — analogous to how a package's own cross-validated regularization path would be used as-is rather than re-implemented. Cox-PH/Weibull-AFT/log-normal-AFT additionally use a small fixed (not tuned, not searched) regularization default — see preregistration.md Deviation 2 — adopted after the Phase 5 pilot showed unregularized MLE diverging at small n/low censoring; that value was chosen once from a numerical-stability argument, not selected by validation score, and applies uniformly.
 
 ## 3.3 Evaluation metrics (pre-registered formulas)
 
@@ -176,7 +178,7 @@ Unit tests that must pass before any experiment runs:
 
 # 7. Software, Compute, Reproducibility
 
-- **Stack:** Python 3.11, PyTorch 2.x, `zuko` (RQS flows; `nflows` fallback), `pycox` (datasets, DeepSurv/DeepHit/DSM baselines), `scikit-survival` (RSF, metrics), `lifelines`; R (`flexsurv` for Royston–Parmar) via `rpy2` or exported CSVs. Config in YAML per cell; seeds per (cell, replication) derived from a master seed.
+- **Stack:** Python 3.11, PyTorch 2.x, `zuko` (RQS flows; `nflows` fallback), `pycox` (datasets, DeepSurv/DeepHit/DSM baselines), `scikit-survival` (RSF, metrics), `lifelines`. Royston–Parmar is a native Python reimplementation (restricted cubic spline basis + L-BFGS MLE) rather than R's `flexsurv` via `rpy2` — avoids the R/rpy2 dependency entirely; same restricted-cubic-spline model. Config in YAML per cell; seeds per (cell, replication) derived from a master seed.
 - **Compute:** ~12,000 simulation datasets × ~10 methods. DL fits with frozen-then-audit tuning (§2.4): ≈ 120 cells × 5 tuning-reps × 30 configs + 12,000 × final fits. Estimated 3,000–6,000 GPU-hours on a single consumer GPU — feasible over 4–6 weeks; classical/ML fits are CPU and trivial. Checkpointing per cell; grid executable in embarrassingly parallel shards.
 - **Reproducibility:** public GitHub repo (code + configs + pre-registration + simulation meta-dataset), `conda` lock file, arXiv preprint timestamping priority before journal submission.
 

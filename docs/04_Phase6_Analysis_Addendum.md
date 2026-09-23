@@ -39,7 +39,9 @@ This table is the operational reading of preregistration.md §2 + §8 Deviation 
 
 ## 4. Tuning protocol (reaffirmed, §4)
 
-30-config random search per DL method per macro-cell (a "macro-cell" = one (scenario, n, censoring-type) combination pooled across censoring levels, per Implementation Plan §3 `tune.py`), tuned on reps 1–5, frozen for reps 6–100 (reps 6–20 for Ausset-CNF, per its reduced R); nested full tuning on a random 10% of cells as the freeze-bias audit. Royston-Parmar and Ausset-CNF follow the same protocol as the other DL-classed methods (`is_deep=True` for `ausset_cnf`; Royston-Parmar remains `is_deep=False`, package-default df-selection only).
+30-config random search per DL method, run independently **per full cell** (`FrozenTuner` keys on `cell.cell_id`, which includes n, censoring %, and censoring type — not pooled across censoring levels; corrects an earlier, inaccurate draft of this section), tuned on reps 1–5, frozen for reps 6–100 (reps 6–20 for Ausset-CNF, per its reduced R); nested full tuning on a random 10% of cells as the freeze-bias audit. Royston-Parmar and Ausset-CNF follow the same protocol as the other DL-classed methods (`is_deep=True` for `ausset_cnf`; Royston-Parmar remains `is_deep=False`, package-default df-selection only).
+
+Classical methods (`cox_ph`, `weibull_aft`, `log_normal_aft`, `rsf`) are deliberately *not* put through this search — fixed/package defaults instead (`rsf`'s `n_jobs`/threading aside, which is a performance setting, not a fitted hyperparameter). This is a considered choice, not an oversight: see `docs/02_Methodology.md` §3.2 for the full rationale (identical-tuning-budget fairness applies to the DL-vs-DL confirmatory contrasts H1–H3, not DL-vs-classical; a 30-config search selected on 5 replications is already a noisy signal that wouldn't meaningfully improve classical methods with few impactful hyperparameters; and package defaults are the fairer real-world comparison point). Royston-Parmar's df ∈ {3,4,5} choice remains its own internal, method-local selection, not part of this external tuning system.
 
 ## 5. Analysis plan (reaffirmed, §5)
 
