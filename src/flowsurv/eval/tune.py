@@ -23,6 +23,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,6 +136,8 @@ def tune_method(
     datasets: list[dict],
     seed: int = 0,
     n_configs: int = N_CONFIGS,
+    verbose: bool = False,
+    cell_id: str = "",
 ) -> tuple[dict, pd.DataFrame]:
     """30-config random search for ``method_name`` over ``datasets``.
 
@@ -145,6 +148,11 @@ def tune_method(
 
     Returns ``(best_config, tuning_log)``. Classical methods without a tuning
     space return ``({}, empty_log)`` immediately (package defaults).
+
+    ``verbose``: print a ``[tune config_id/n_configs]`` line per config (this
+    search runs once per macro-cell before that cell's first scored fit, and
+    is otherwise silent -- a multi-minute gap that looks like a hang from the
+    grid driver's per-fit progress line alone).
     """
     cls = METHODS[method_name]
     probe = cls()
@@ -154,8 +162,11 @@ def tune_method(
         return {}, empty_log
 
     configs = sample_configs(space, n=n_configs, seed=seed)
+    if verbose:
+        print(f"[tune] {method_name} {cell_id}: {len(configs)}-config search over {len(datasets)} datasets", flush=True)
     rows = []
     for config_id, cfg in enumerate(configs):
+        t0 = time.perf_counter()
         scores, converged_all = [], True
         for rep_offset, ds in enumerate(datasets):
             method = cls()
@@ -177,6 +188,13 @@ def tune_method(
         }
         row.update({f"cfg_{k}": v for k, v in cfg.items()})
         rows.append(row)
+        if verbose:
+            print(
+                f"[tune] {method_name} {cell_id} config {config_id + 1}/{len(configs)} "
+                f"score={row['mean_val_score']:.4f} conv={converged_all!s:5s} "
+                f"({time.perf_counter() - t0:.1f}s)",
+                flush=True,
+            )
 
     log = pd.DataFrame(rows, columns=TUNING_LOG_COLUMNS + sorted({k for r in rows for k in r if k.startswith("cfg_")}))
     if log["mean_val_score"].isna().all():
@@ -263,11 +281,13 @@ class FrozenTuner:
         n_configs: int = N_CONFIGS,
         seed: int = 0,
         audit: bool = False,
+        verbose: bool = False,
     ) -> None:
         self.tuning_dir = Path(tuning_dir)
         self.n_configs = n_configs
         self.seed = seed
         self.audit = audit
+        self.verbose = verbose
         self._cache: dict[tuple[str, str, int], dict] = {}
 
     # -- paths -------------------------------------------------------------
@@ -343,7 +363,10 @@ class FrozenTuner:
             row = pd.read_parquet(path).iloc[0]
             return json.loads(row["config_json"])
         datasets = self._build_datasets(cell, list(TUNE_REPS))
-        best, log = tune_method(method_name, datasets, seed=self.seed, n_configs=self.n_configs)
+        best, log = tune_method(
+            method_name, datasets, seed=self.seed, n_configs=self.n_configs,
+            verbose=self.verbose, cell_id=str(cell.cell_id),
+        )
         self._persist_frozen(method_name, cell.cell_id, best, log)
         return best
 
@@ -365,7 +388,8 @@ class FrozenTuner:
             if key not in self._cache:
                 datasets = self._build_datasets(cell, [int(rep)])
                 best, log = tune_method(
-                    method_name, datasets, seed=self.seed + int(rep), n_configs=self.n_configs
+                    method_name, datasets, seed=self.seed + int(rep), n_configs=self.n_configs,
+                    verbose=self.verbose, cell_id=str(cell.cell_id),
                 )
                 self._persist_audit(method_name, str(cell.cell_id), rep, best, log)
                 self._cache[key] = best

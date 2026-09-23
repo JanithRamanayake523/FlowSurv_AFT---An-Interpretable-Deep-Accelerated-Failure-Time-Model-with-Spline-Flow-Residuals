@@ -142,7 +142,7 @@ def run_grid(
     if unknown:
         raise ValueError(f"unknown methods {unknown}; known: {list(METHODS)}")
 
-    tuner = FrozenTuner(tuning_dir, audit=audit)
+    tuner = FrozenTuner(tuning_dir, audit=audit, verbose=verbose)
     failures: list[dict] = []
 
     sim_cells = []
