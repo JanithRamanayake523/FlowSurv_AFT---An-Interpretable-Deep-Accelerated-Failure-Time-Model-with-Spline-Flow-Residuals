@@ -57,11 +57,31 @@ def _standardize(df: pd.DataFrame, numeric_cols: list[str]) -> pd.DataFrame:
     return df
 
 
+def _floor_zero_durations(t: Tensor) -> Tensor:
+    """Replace non-positive observed times with half the smallest positive one.
+
+    A handful of subjects in FLCHAIN (3/6524) and METABRIC (1/1904) have
+    duration == 0 (event/censoring recorded same-day as enrollment) --
+    real, valid data, but it breaks every log-time model (Weibull/log-normal
+    AFT, Royston-Parmar): lifelines refuses to fit at all if *any* row has
+    duration <= 0, which was silently taking out 100% of those methods' fits
+    on these two datasets. The standard fix (lifelines' own suggestion) is a
+    small positive floor rather than dropping subjects or dropping datasets.
+    """
+    t = t.clone()
+    mask = t <= 0
+    if mask.any():
+        positive = t[~mask]
+        floor = float(positive.min()) * 0.5 if positive.numel() else 1e-3
+        t[mask] = floor
+    return t
+
+
 def _df_to_tensors(df: pd.DataFrame) -> dict:
     """Build the canonical dict from a processed DataFrame."""
     x_cols = [c for c in df.columns if c not in ("duration", "event")]
     x = torch.tensor(df[x_cols].to_numpy(dtype=np.float32), dtype=torch.float32)
-    t = torch.tensor(df["duration"].to_numpy(dtype=np.float32), dtype=torch.float32)
+    t = _floor_zero_durations(torch.tensor(df["duration"].to_numpy(dtype=np.float32), dtype=torch.float32))
     d = torch.tensor(df["event"].to_numpy(dtype=np.float32), dtype=torch.float32)
     return {"t": t, "d": d, "x": x, "name": "unknown"}
 
@@ -185,7 +205,7 @@ def load_whas() -> dict:
     x = (x - x_mean) / x_std
 
     return {
-        "t": torch.tensor(t, dtype=torch.float32),
+        "t": _floor_zero_durations(torch.tensor(t, dtype=torch.float32)),
         "d": torch.tensor(d, dtype=torch.float32),
         "x": torch.tensor(x, dtype=torch.float32),
         "name": "whas",
