@@ -22,6 +22,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -60,7 +61,30 @@ def _flush_failures(failures: list[dict], path: Path = FAILURES_PATH) -> None:
     failures.clear()
 
 
-def _run_cell_reps(run_fn, cell, cell_id: str, reps, methods, tuner, device, out, failures) -> None:
+class _Progress:
+    """Running [done/total] counter with elapsed time, printed per fit."""
+
+    def __init__(self, total: int, verbose: bool) -> None:
+        self.total = total
+        self.verbose = verbose
+        self.done = 0
+        self.start = time.perf_counter()
+
+    def tick(self, cell_id: str, rep: int, method_name: str, row: dict) -> None:
+        self.done += 1
+        if not self.verbose:
+            return
+        elapsed = time.perf_counter() - self.start
+        print(
+            f"[{self.done}/{self.total}] {cell_id} rep={rep} {method_name:14s} "
+            f"conv={row['converged']!s:5s} time={row['time_fit_s']:6.1f}s "
+            f"(elapsed {elapsed/60:.1f} min)"
+            + (f"  ERR={row['error'][:100]}" if row["error"] else ""),
+            flush=True,
+        )
+
+
+def _run_cell_reps(run_fn, cell, cell_id: str, reps, methods, tuner, device, out, failures, progress: "_Progress | None" = None) -> None:
     for rep in reps:
         part = _part_path(out, cell_id, rep)
         done: set[str] = set()
@@ -69,9 +93,13 @@ def _run_cell_reps(run_fn, cell, cell_id: str, reps, methods, tuner, device, out
         rows = []
         for method_name in methods:
             if method_name in done:
+                if progress is not None:
+                    progress.done += 1  # already-done rows still count toward total
                 continue  # idempotent rerun
             row = run_fn(cell, rep, method_name, tuner=tuner, device=device)
             rows.append(row)
+            if progress is not None:
+                progress.tick(cell_id, rep, method_name, row)
         if rows:
             df = pd.DataFrame(rows)
             if part.exists():
@@ -92,6 +120,7 @@ def run_grid(
     audit: bool = False,
     real_reps=REAL_REPS,
     tuning_dir: str | Path = "experiments/tuning",
+    verbose: bool = True,
 ) -> None:
     """Run the evaluation grid with checkpointing and idempotent reruns.
 
@@ -102,6 +131,9 @@ def run_grid(
       use only on the audit subset from ``audit_cells``).
     - Real datasets (reps 1-10, prereg Sec. 4.2) are included unless
       ``sim_only``; ``real_only`` skips the simulation grid.
+    - ``verbose``: print a ``[done/total]`` line per fit to stdout (default
+      on -- this call runs unattended for hours/days, so a silent terminal
+      looks hung even when it isn't).
     """
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -113,32 +145,43 @@ def run_grid(
     tuner = FrozenTuner(tuning_dir, audit=audit)
     failures: list[dict] = []
 
+    sim_cells = []
     if not real_only:
-        cells = list(cells) if cells is not None else list(default_grid())
-        cells = shard_items(cells, shard[0], shard[1])
-        for cell in cells:
-            _run_cell_reps(
-                run_sim_rep, cell, cell.cell_id, reps, methods, tuner, device, out, failures
-            )
-            _flush_failures(failures)
+        sim_cells = list(cells) if cells is not None else list(default_grid())
+        sim_cells = shard_items(sim_cells, shard[0], shard[1])
+    real_names = list(REAL_DATASETS) if not sim_only else []
 
-    if not sim_only:
-        for name in REAL_DATASETS:
-            cell_id = f"{name}_real"
-            _run_cell_reps(
-                lambda _c, rep, m, **kw: run_real_rep(name, rep, m, **kw),
-                None,
-                cell_id,
-                real_reps,
-                methods,
-                tuner,
-                device,
-                out,
-                failures,
-            )
-            _flush_failures(failures)
+    total = len(methods) * (len(sim_cells) * len(list(reps)) + len(real_names) * len(list(real_reps)))
+    progress = _Progress(total, verbose) if total else None
+    if verbose and total:
+        print(f"[grid] {len(sim_cells)} sim cells + {len(real_names)} real datasets x {len(methods)} methods = {total} fits", flush=True)
+
+    for cell in sim_cells:
+        _run_cell_reps(
+            run_sim_rep, cell, cell.cell_id, reps, methods, tuner, device, out, failures, progress
+        )
+        _flush_failures(failures)
+
+    for name in real_names:
+        cell_id = f"{name}_real"
+        _run_cell_reps(
+            lambda _c, rep, m, **kw: run_real_rep(name, rep, m, **kw),
+            None,
+            cell_id,
+            real_reps,
+            methods,
+            tuner,
+            device,
+            out,
+            failures,
+            progress,
+        )
+        _flush_failures(failures)
 
     _flush_failures(failures)
+    if verbose and total:
+        elapsed = time.perf_counter() - progress.start
+        print(f"[grid] DONE in {elapsed/60:.1f} min", flush=True)
 
 
 def grid_status(out: str | Path = METRICS_DIR) -> pd.DataFrame:
@@ -185,6 +228,7 @@ def main(argv: list[str] | None = None) -> None:
     mode.add_argument("--sim", action="store_true", help="simulation grid only")
     parser.add_argument("--audit", action="store_true", help="per-rep nested tuning (audit cells)")
     parser.add_argument("--status", action="store_true", help="print grid status and exit")
+    parser.add_argument("--quiet", action="store_true", help="suppress the per-fit progress line")
     args = parser.parse_args(argv)
 
     if args.status:
@@ -208,6 +252,7 @@ def main(argv: list[str] | None = None) -> None:
         sim_only=args.sim,
         audit=args.audit,
         tuning_dir=args.tuning_dir,
+        verbose=not args.quiet,
     )
 
 
