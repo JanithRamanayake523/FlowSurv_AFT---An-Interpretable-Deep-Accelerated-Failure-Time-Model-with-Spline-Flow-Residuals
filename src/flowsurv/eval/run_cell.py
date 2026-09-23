@@ -71,6 +71,7 @@ METRICS_COLUMNS = [
     "time_sample_s",
     "converged",
     "error",
+    "tuned",
 ]
 
 
@@ -101,6 +102,7 @@ def _empty_row(
         method=method_name,
         converged=False,
         error="",
+        tuned=False,
     )
     return row
 
@@ -186,6 +188,7 @@ def run_sim_rep(
         seed = cell_seed(cell.cell_id, rep)  # common seeds across methods (prereg Sec. 4)
         splits = split_train_val_test(data["t"], data["d"], data["x"], seed=seed)
         method = METHODS[method_name]()
+        row["tuned"] = tuner is not None and getattr(method, "is_deep", False)
         config = _fit_config(method_name, method, tuner, cell, rep, device)
         fit_result = method.fit(
             splits["train"]["t"],
@@ -226,6 +229,7 @@ def run_real_rep(
         train2, val = inner_val_split(splits["train"], val_frac=0.15, seed=rep)
         cell = RealCell(cell_id=row["cell_id"], name=dataset_name)
         method = METHODS[method_name]()
+        row["tuned"] = tuner is not None and getattr(method, "is_deep", False)
         config = _fit_config(method_name, method, tuner, cell, rep, device)
         fit_result = method.fit(
             train2["t"],

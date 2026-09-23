@@ -121,6 +121,7 @@ def run_grid(
     real_reps=REAL_REPS,
     tuning_dir: str | Path = "experiments/tuning",
     verbose: bool = True,
+    no_tune: bool = False,
 ) -> None:
     """Run the evaluation grid with checkpointing and idempotent reruns.
 
@@ -134,6 +135,11 @@ def run_grid(
     - ``verbose``: print a ``[done/total]`` line per fit to stdout (default
       on -- this call runs unattended for hours/days, so a silent terminal
       looks hung even when it isn't).
+    - ``no_tune``: skip the pre-registered 30-config search entirely and fit
+      every DL method at its class defaults (``tuner=None``, same as the
+      Phase 5 pilot). Faster, but NOT the pre-registered protocol (prereg
+      Sec. 4) -- results from a ``no_tune`` run cannot be used for the
+      confirmatory H1-H3 contrasts, only for a quick sanity/direction check.
     """
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -142,7 +148,7 @@ def run_grid(
     if unknown:
         raise ValueError(f"unknown methods {unknown}; known: {list(METHODS)}")
 
-    tuner = FrozenTuner(tuning_dir, audit=audit, verbose=verbose)
+    tuner = None if no_tune else FrozenTuner(tuning_dir, audit=audit, verbose=verbose)
     failures: list[dict] = []
 
     sim_cells = []
@@ -227,6 +233,10 @@ def main(argv: list[str] | None = None) -> None:
     mode.add_argument("--real", action="store_true", help="real datasets only")
     mode.add_argument("--sim", action="store_true", help="simulation grid only")
     parser.add_argument("--audit", action="store_true", help="per-rep nested tuning (audit cells)")
+    parser.add_argument(
+        "--no-tune", action="store_true",
+        help="skip the 30-config search, fit DL methods at class defaults (NOT the pre-registered protocol -- sanity-check runs only)",
+    )
     parser.add_argument("--status", action="store_true", help="print grid status and exit")
     parser.add_argument("--quiet", action="store_true", help="suppress the per-fit progress line")
     args = parser.parse_args(argv)
@@ -253,6 +263,7 @@ def main(argv: list[str] | None = None) -> None:
         audit=args.audit,
         tuning_dir=args.tuning_dir,
         verbose=not args.quiet,
+        no_tune=args.no_tune,
     )
 
 
