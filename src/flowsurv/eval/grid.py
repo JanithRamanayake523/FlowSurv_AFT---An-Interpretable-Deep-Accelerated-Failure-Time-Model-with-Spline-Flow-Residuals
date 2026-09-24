@@ -28,6 +28,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..baselines import ABLATION_METHODS, METHODS
+from .predictions import PREDICTIONS_DIR
 from ..data import REAL_DATASETS, default_grid
 from .run_cell import run_real_rep, run_sim_rep
 from .tune import FrozenTuner
@@ -84,7 +85,21 @@ class _Progress:
         )
 
 
-def _run_cell_reps(run_fn, cell, cell_id: str, reps, methods, tuner, device, out, failures, progress: "_Progress | None" = None) -> None:
+def _run_cell_reps(
+    run_fn,
+    cell,
+    cell_id: str,
+    reps,
+    methods,
+    tuner,
+    device,
+    out,
+    failures,
+    progress: "_Progress | None" = None,
+    predictions_dir: str | None = None,
+    prediction_reps: int = 5,
+    is_real: bool = False,
+) -> None:
     for rep in reps:
         part = _part_path(out, cell_id, rep)
         done: set[str] = set()
@@ -96,7 +111,9 @@ def _run_cell_reps(run_fn, cell, cell_id: str, reps, methods, tuner, device, out
                 if progress is not None:
                     progress.done += 1  # already-done rows still count toward total
                 continue  # idempotent rerun
-            row = run_fn(cell, rep, method_name, tuner=tuner, device=device)
+            # predictions: every real-data split, simulation reps <= prediction_reps (disk budget)
+            keep = predictions_dir if predictions_dir and (is_real or rep <= prediction_reps) else None
+            row = run_fn(cell, rep, method_name, tuner=tuner, device=device, predictions_dir=keep)
             rows.append(row)
             if progress is not None:
                 progress.tick(cell_id, rep, method_name, row)
@@ -122,12 +139,18 @@ def run_grid(
     tuning_dir: str | Path = "experiments/tuning",
     verbose: bool = True,
     no_tune: bool = False,
+    predictions_dir: str | Path | None = PREDICTIONS_DIR,
+    prediction_reps: int = 5,
 ) -> None:
     """Run the evaluation grid with checkpointing and idempotent reruns.
 
     - ``cells``: ``CellConfig`` list; default :func:`default_grid`. Sharded by
       cell index so a cell's reps stay together.
     - ``methods``: method names; default all of ``METHODS`` except the ablation/diagnostic ones (``ABLATION_METHODS``).
+    - ``predictions_dir``: save each fit's test-fold prediction arrays there so
+      metrics can be recomputed without refitting (``None`` disables). Real-data
+      splits are always saved; simulation replications only up to
+      ``prediction_reps`` (~0.5 MB per fit, disk budget).
     - ``audit``: pass ``audit=True`` to the FrozenTuner (per-rep nested tuning;
       use only on the audit subset from ``audit_cells``).
     - Real datasets (reps 1-10, prereg Sec. 4.2) are included unless
@@ -164,7 +187,8 @@ def run_grid(
 
     for cell in sim_cells:
         _run_cell_reps(
-            run_sim_rep, cell, cell.cell_id, reps, methods, tuner, device, out, failures, progress
+            run_sim_rep, cell, cell.cell_id, reps, methods, tuner, device, out, failures, progress,
+            None if predictions_dir is None else str(predictions_dir), prediction_reps,
         )
         _flush_failures(failures)
 
@@ -181,6 +205,9 @@ def run_grid(
             out,
             failures,
             progress,
+            None if predictions_dir is None else str(predictions_dir),
+            prediction_reps,
+            True,
         )
         _flush_failures(failures)
 
@@ -232,6 +259,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--out", default=str(METRICS_DIR))
     parser.add_argument("--tuning-dir", default="experiments/tuning")
+    parser.add_argument(
+        "--predictions-dir", default=str(PREDICTIONS_DIR),
+        help="where to save per-fit test-fold predictions (metrics can then be recomputed without refitting); 'none' disables",
+    )
+    parser.add_argument(
+        "--prediction-reps", type=int, default=5,
+        help="simulation replications 1..N whose predictions are saved (real-data splits are always saved); ~0.5 MB per fit",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--real", action="store_true", help="real datasets only")
     mode.add_argument("--sim", action="store_true", help="simulation grid only")
@@ -280,6 +315,8 @@ def main(argv: list[str] | None = None) -> None:
         tuning_dir=args.tuning_dir,
         verbose=not args.quiet,
         no_tune=args.no_tune,
+        predictions_dir=None if str(args.predictions_dir).lower() == "none" else args.predictions_dir,
+        prediction_reps=args.prediction_reps,
     )
 
 

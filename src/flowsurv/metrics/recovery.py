@@ -63,6 +63,54 @@ def hazard_recovery_error(
     return float(per_subject.mean())
 
 
+def truncated_hazard_recovery_error(
+    h_pred: Tensor,
+    h_true: Tensor,
+    cdf_true: Tensor,
+    grid: Tensor,
+    level: float = 0.9,
+    weights: Tensor | None = None,
+) -> float:
+    """HRE truncated at each subject's own true ``level``-quantile (Deviation 6).
+
+    For subject i, the window is ``t <= Q_true(level | x_i)``, i.e. the times
+    up to which a fraction ``level`` of that subject's own true event-time
+    distribution lies (the first grid time with ``F_true >= level``; the whole
+    grid if it never gets there). Inside the window the same pooled weights
+    w(t) as the pre-registered HRE are used, renormalized per subject so each
+    subject contributes a weighted *average* squared hazard error over its own
+    window:
+
+        HRE_trunc = mean_i  int_0^{Q_i} [h_pred - h_true]^2 w dt / int_0^{Q_i} w dt.
+
+    The pre-registered HRE applies the pooled w(t) to every subject over the
+    whole grid, so for a high-risk subject most of the integral comes from
+    times at which that subject's true CDF is already above 0.99 -- a region
+    where no data exist and which rewards the right parametric tail. This
+    variant removes that region. It is reported alongside, never instead of,
+    the pre-registered HRE.
+
+    ``cdf_true`` is the (m, n) true conditional CDF on ``grid``.
+    """
+    h_pred = torch.as_tensor(h_pred, dtype=torch.float64)
+    h_true = torch.as_tensor(h_true, dtype=torch.float64)
+    cdf_true = torch.as_tensor(cdf_true, dtype=torch.float64)
+    grid = torch.as_tensor(grid, dtype=torch.float64).flatten()
+    assert torch.isfinite(h_pred).all() and torch.isfinite(h_true).all(), (
+        "h_pred/h_true must be finite; filter methods without hazard support upstream"
+    )
+    w = _default_weights(h_true, grid) if weights is None else torch.as_tensor(weights, dtype=torch.float64).flatten()
+
+    reached = cdf_true >= level  # (m, n), monotone in t
+    first = torch.where(reached.any(dim=0), reached.to(torch.int64).argmax(dim=0), torch.full((cdf_true.shape[1],), grid.numel() - 1))
+    window = (torch.arange(grid.numel()).unsqueeze(1) <= first.unsqueeze(0)).to(torch.float64)  # (m, n)
+
+    w_win = w.unsqueeze(1) * window
+    num = torch.trapezoid((h_pred - h_true).pow(2) * w_win, grid, dim=0)
+    den = torch.trapezoid(w_win, grid, dim=0).clamp_min(torch.finfo(torch.float64).tiny)
+    return float((num / den).mean())
+
+
 def cumulative_hazard_error(
     h_pred: Tensor,
     h_true: Tensor,

@@ -173,3 +173,49 @@ def test_cumulative_hazard_error_zero_at_truth_and_robust_to_spike():
     hre = hazard_recovery_error(h_spike, h_true, grid)
     che = cumulative_hazard_error(h_spike, h_true, grid)
     assert che < hre  # the spike is far less dominant on the cumulative scale
+
+
+# ------------------------------------------- Deviation 6: HRE truncated at each subject's own Q_true(0.9)
+def test_truncated_hre_ignores_hazard_error_beyond_each_subjects_window():
+    from flowsurv.metrics import hazard_recovery_error, truncated_hazard_recovery_error
+
+    grid = torch.linspace(0.01, 10.0, 400)
+    n = 5
+    h_true = torch.ones(400, n)
+    cdf_true = 1 - torch.exp(-grid.unsqueeze(1) * torch.linspace(0.5, 2.0, n).unsqueeze(0))  # subject-specific
+    q90 = -torch.log(torch.tensor(0.1)) / torch.linspace(0.5, 2.0, n)  # true 0.9-quantile per subject
+    # hazard error only where every subject's true CDF is already >= 0.9 (t > max Q90 ~ 4.6)
+    h_pred = h_true.clone()
+    h_pred[grid > float(q90.max()) + 0.05] += 50.0
+    assert truncated_hazard_recovery_error(h_pred, h_true, cdf_true, grid) < 1e-9
+    assert hazard_recovery_error(h_pred, h_true, grid) > 1e-3  # pooled HRE does see it
+
+
+def test_truncated_hre_is_a_weighted_average_over_the_window():
+    from flowsurv.metrics import truncated_hazard_recovery_error
+
+    grid = torch.linspace(0.01, 10.0, 400)
+    h_true = torch.ones(400, 3)
+    cdf_true = 1 - torch.exp(-grid.unsqueeze(1) * torch.tensor([0.5, 1.0, 2.0]).unsqueeze(0))
+    h_pred = h_true + 0.3  # constant error 0.3 everywhere -> squared error 0.09 in any window
+    val = truncated_hazard_recovery_error(h_pred, h_true, cdf_true, grid)
+    assert abs(val - 0.09) < 5e-3  # renormalized per subject, so window length does not matter
+
+
+# ------------------------------------------ item 4: predictions saved, metrics recomputable offline
+def test_saved_predictions_reproduce_the_metrics(tmp_path):
+    from flowsurv.data import default_grid
+    from flowsurv.eval.predictions import load_predictions
+    from flowsurv.eval.run_cell import run_sim_rep
+    from flowsurv.metrics import d_calibration, ici, integrated_brier_score, unos_c
+
+    cell = next(c for c in default_grid() if c.cell_id == "S1_n200_c20_typeI")
+    row = run_sim_rep(cell, 1, "cox_ph", predictions_dir=str(tmp_path))
+    assert row["converged"]
+    p = load_predictions(tmp_path, cell.cell_id, 1, "cox_ph")
+    assert {"grid", "surv", "s_at_obs", "s_at_tau", "hazard", "risk", "t", "d", "tau"} <= set(p)
+    t, d, tau = torch.tensor(p["t"]), torch.tensor(p["d"]), float(p["tau"])
+    assert np.isclose(unos_c(torch.tensor(p["risk"]), t, d, tau=tau), row["unos_c"], atol=1e-6)
+    assert np.isclose(integrated_brier_score(torch.tensor(p["surv"]), torch.tensor(p["grid"]), t, d, tau=tau), row["ibs"], atol=1e-6)
+    assert np.isclose(d_calibration(torch.tensor(p["s_at_obs"]), d).statistic, row["dcal_stat"], atol=1e-5)
+    assert np.isclose(ici(torch.tensor(p["s_at_tau"]), t, d, tau=tau), row["ici"], atol=1e-6)

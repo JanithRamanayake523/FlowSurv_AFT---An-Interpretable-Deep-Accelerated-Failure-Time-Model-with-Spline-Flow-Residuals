@@ -39,10 +39,12 @@ from ..metrics import (
     d_calibration,
     cumulative_hazard_error,
     hazard_recovery_error,
+    truncated_hazard_recovery_error,
     ici,
     integrated_brier_score,
     unos_c,
 )
+from .predictions import save_predictions
 from .tune import FrozenTuner, RealCell, inner_val_split
 
 METHOD_EVAL_GRID = 200
@@ -65,6 +67,7 @@ METRICS_COLUMNS = [
     "dcal_pass",
     "ici",
     "hre",
+    "hre_trunc",
     "hre_cum",
     "ks",
     "w1",
@@ -117,8 +120,13 @@ def _per_subject(pred) -> torch.Tensor:
     return pred
 
 
-def _evaluate(method, fit_result, test: dict, truth: dict | None, row: dict) -> None:
-    """Fill the metric columns of ``row`` on the test fold. May raise."""
+def _evaluate(method, fit_result, test: dict, truth: dict | None, row: dict, capture: dict | None = None) -> None:
+    """Fill the metric columns of ``row`` on the test fold. May raise.
+
+    ``capture``, when given, is filled with the arrays every metric is computed
+    from (see :mod:`flowsurv.eval.predictions`) so metrics can be recomputed
+    without refitting.
+    """
     t, d, x = test["t"], test["d"], test["x"]
     grid = eval_grid(t)
     tau = float(grid[-1])
@@ -133,6 +141,19 @@ def _evaluate(method, fit_result, test: dict, truth: dict | None, row: dict) -> 
     h_pred = method.predict_hazard(grid, x, **mode_kwargs(method, False)) if getattr(method, "supports_hazard", False) else None
     row["time_eval_s"] = time.perf_counter() - t0
 
+    if capture is not None:
+        capture.update(
+            grid=grid,
+            surv=torch.as_tensor(surv, dtype=torch.float32).numpy(),
+            s_at_obs=s_at_obs.numpy(),
+            s_at_tau=s_at_tau.numpy(),
+            hazard=None if h_pred is None else torch.as_tensor(h_pred, dtype=torch.float32).numpy(),
+            risk=torch.as_tensor(risk, dtype=torch.float32).reshape(-1).numpy(),
+            t=torch.as_tensor(t, dtype=torch.float32).numpy(),
+            d=torch.as_tensor(d, dtype=torch.float32).numpy(),
+            tau=tau,
+        )
+
     row["time_fit_s"] = float(fit_result.wall_time_s)
     row["unos_c"] = float(unos_c(risk, t, d, tau=tau))
     row["ibs"] = float(integrated_brier_score(surv, grid, t, d, tau=tau))
@@ -143,13 +164,15 @@ def _evaluate(method, fit_result, test: dict, truth: dict | None, row: dict) -> 
     row["ici"] = float(ici(s_at_tau, t, d, tau=tau))
 
     if truth is not None:
+        cdf_true = truth["cdf"](grid, x)
         if h_pred is not None:
             h_true = truth["hazard"](grid, x)
             row["hre"] = float(hazard_recovery_error(h_pred, h_true, grid))
+            # Deviation 6: HRE truncated at each subject's own true 0.9-quantile
+            row["hre_trunc"] = float(truncated_hazard_recovery_error(h_pred, h_true, cdf_true, grid))
             row["hre_cum"] = float(cumulative_hazard_error(h_pred, h_true, grid))  # exploratory, scale-robust
         f_pred = 1.0 - torch.as_tensor(surv, dtype=torch.float32)
-        f_true = truth["cdf"](grid, x)
-        fidelity = cdf_fidelity(f_pred, f_true, grid)
+        fidelity = cdf_fidelity(f_pred, cdf_true, grid)
         row["ks"] = float(fidelity["ks"])
         row["w1"] = float(fidelity["w1"])
 
@@ -179,8 +202,12 @@ def run_sim_rep(
     method_name: str,
     tuner: FrozenTuner | None = None,
     device: str = "cpu",
+    predictions_dir: str | None = None,
 ) -> dict:
     """Run one (simulation cell, replication, method) and return a metrics row.
+
+    ``predictions_dir``: if given, the test-fold arrays behind the metrics are
+    saved there (see :mod:`flowsurv.eval.predictions`).
 
     Never raises: any exception is captured as ``converged=False`` +
     ``error=repr(e)`` with NaN metrics.
@@ -202,7 +229,10 @@ def run_sim_rep(
             **config,
         )
         row["converged"] = bool(fit_result.converged)
-        _evaluate(method, fit_result, splits["test"], data.get("truth"), row)
+        capture: dict | None = {} if predictions_dir else None
+        _evaluate(method, fit_result, splits["test"], data.get("truth"), row, capture)
+        if capture:
+            save_predictions(predictions_dir, cell.cell_id, rep, method_name, capture)
     except Exception as e:  # noqa: BLE001 -- failures are data (prereg Sec. 5)
         row["converged"] = False
         row["error"] = repr(e)
@@ -215,6 +245,7 @@ def run_real_rep(
     method_name: str,
     tuner: FrozenTuner | None = None,
     device: str = "cpu",
+    predictions_dir: str | None = None,
 ) -> dict:
     """Run one (real dataset, split, method) and return a metrics row.
 
@@ -243,7 +274,10 @@ def run_real_rep(
             **config,
         )
         row["converged"] = bool(fit_result.converged)
-        _evaluate(method, fit_result, splits["test"], None, row)
+        capture = {} if predictions_dir else None
+        _evaluate(method, fit_result, splits["test"], None, row, capture)
+        if capture:
+            save_predictions(predictions_dir, row["cell_id"], rep, method_name, capture)
     except Exception as e:  # noqa: BLE001
         row["converged"] = False
         row["error"] = repr(e)

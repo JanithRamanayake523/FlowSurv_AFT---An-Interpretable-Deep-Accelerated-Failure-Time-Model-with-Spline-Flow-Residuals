@@ -32,16 +32,20 @@ METRIC_COLUMNS = [
     "dcal_pass",
     "ici",
     "hre",
+    "hre_trunc",
+    "hre_cum",
     "ks",
     "w1",
     "time_fit_s",
     "time_eval_s",
     "time_sample_s",
 ]
-SUMMARY_METRICS = ["unos_c", "ibs", "dcal_pass", "ici", "hre", "ks", "w1"]
+SUMMARY_METRICS = ["unos_c", "ibs", "dcal_pass", "ici", "hre", "hre_trunc", "hre_cum", "ks", "w1"]
 REAL_METRICS = ["unos_c", "ibs", "dcal_pass", "ici"]
 
 FLOW_METHOD = "flowsurv_aft"
+#: pre-registered HRE and its per-subject-truncated companion (prereg Deviation 6)
+HRE_METRICS = ("hre", "hre_trunc")
 DISCRIMINATIVE_DL = ["deepsurv", "deephit"]
 
 # Pre-registered non-inferiority margins (prereg Sec. 6).
@@ -172,29 +176,31 @@ def _wilcoxon_pvalue(a, b) -> float:
 
 
 def _contrast_c1(df: pd.DataFrame, seed: int) -> list[dict]:
-    """C1 (H1): FlowSurv-AFT vs DSM, HRE, scenarios S2-S4."""
+    """C1 (H1): FlowSurv-AFT vs DSM, scenarios S2-S4, on the pre-registered HRE and
+    on the truncated HRE of Deviation 6 (both reported; neither chosen after results)."""
     sub = df[df["scenario"].isin(["S2", "S3", "S4"]) & df["method"].isin([FLOW_METHOD, "dsm"])]
     rows = []
     for cell_id, g in sub.groupby("cell_id", observed=True):
-        a, b = _paired_by(g, FLOW_METHOD, "dsm", "hre", ["rep"])
-        if a.size < 5:
-            continue
-        med, lo, hi = bootstrap_median_ci(a - b, seed=seed)
-        rows.append(
-            {
-                "contrast": "C1",
-                "cell_id": cell_id,
-                "metric": "hre",
-                "other_method": "dsm",
-                "n_pairs": a.size,
-                "median_flow": float(np.median(a)),
-                "median_other": float(np.median(b)),
-                "median_diff": med,
-                "ci_lo": lo,
-                "ci_hi": hi,
-                "pvalue": _wilcoxon_pvalue(a, b),
-            }
-        )
+        for metric in HRE_METRICS:
+            a, b = _paired_by(g, FLOW_METHOD, "dsm", metric, ["rep"])
+            if a.size < 5:
+                continue
+            med, lo, hi = bootstrap_median_ci(a - b, seed=seed)
+            rows.append(
+                {
+                    "contrast": "C1",
+                    "cell_id": cell_id,
+                    "metric": metric,
+                    "other_method": "dsm",
+                    "n_pairs": a.size,
+                    "median_flow": float(np.median(a)),
+                    "median_other": float(np.median(b)),
+                    "median_diff": med,
+                    "ci_lo": lo,
+                    "ci_hi": hi,
+                    "pvalue": _wilcoxon_pvalue(a, b),
+                }
+            )
     return rows
 
 
@@ -256,7 +262,7 @@ def _contrast_c3(df: pd.DataFrame, margin_ibs: float, margin_hre: float | None, 
     sub = df[(df["scenario"] == "S1") & df["method"].isin([FLOW_METHOD, "weibull_aft"])]
     rows = []
     for cell_id, g in sub.groupby("cell_id", observed=True):
-        for metric, margin in (("hre", margin_hre), ("ibs", margin_ibs)):
+        for metric, margin in (("hre", margin_hre), ("hre_trunc", margin_hre), ("ibs", margin_ibs)):
             a, b = _paired_by(g, FLOW_METHOD, "weibull_aft", metric, ["rep"])
             if a.size < 5:
                 continue
@@ -487,7 +493,7 @@ def figure_f1(df: pd.DataFrame, out_dir: str | Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     sim = df[df["censoring_type"] != "real"]
-    for metric in ("hre", "ibs"):
+    for metric in ("hre", "hre_trunc", "ibs"):
         for scenario, g in sim.groupby("scenario", observed=True):
             cell = (
                 g.groupby(["method", "cell_id", "censoring"], observed=True)[metric]

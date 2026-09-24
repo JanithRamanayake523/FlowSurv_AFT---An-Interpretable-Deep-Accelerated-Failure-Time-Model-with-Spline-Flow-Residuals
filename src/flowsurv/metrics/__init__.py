@@ -4,7 +4,13 @@ from .brier import integrated_brier_score
 from .calibration import DCAL_ALPHA, DCalResult, calibration_slope, d_calibration, ici
 from .cost import CostReport, audit_cost, time_call
 from .discrimination import kaplan_meier_cdf, unos_c
-from .recovery import cdf_fidelity, cumulative_hazard_error, hazard_recovery_error, quartile_cdf_deviation
+from .recovery import (
+    cdf_fidelity,
+    cumulative_hazard_error,
+    hazard_recovery_error,
+    quartile_cdf_deviation,
+    truncated_hazard_recovery_error,
+)
 
 __all__ = [
     "DCAL_ALPHA",
@@ -20,6 +26,7 @@ __all__ = [
     "integrated_brier_score",
     "kaplan_meier_cdf",
     "quartile_cdf_deviation",
+    "truncated_hazard_recovery_error",
     "time_call",
     "unos_c",
 ]
