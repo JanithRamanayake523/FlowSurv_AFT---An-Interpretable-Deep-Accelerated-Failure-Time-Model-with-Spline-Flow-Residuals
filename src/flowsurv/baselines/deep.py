@@ -227,26 +227,26 @@ class DeepSurv(SurvivalMethod):
                 warnings.warn(f"DeepSurv baseline-hazard computation failed: {e!r}")
         return FitResult(wall_time_s=info.get("wall_time_s", time.perf_counter()), converged=converged, info=info)
 
-    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+    def _surv64(self, t: Tensor, x: Tensor) -> tuple[np.ndarray, np.ndarray]:
+        """Survival as float64 (m, n) plus the query times; never cast to float32."""
         if self.model is None:
             raise RuntimeError("DeepSurv has not been fit")
         t_np, _, x_np = to_numpy(t, torch.zeros_like(t), x)
         x_np = x_np.astype(np.float32)
         t_max = float(np.max(t_np))
         surv_df = self.model.predict_surv_df(x_np, max_duration=t_max)
-        return as_output(_df_to_surv(surv_df, t_np))
+        return _df_to_surv(surv_df, t_np), t_np
+
+    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+        return as_output(self._surv64(t, x)[0])
 
     def predict_density(self, t: Tensor, x: Tensor) -> Tensor:
-        surv = self.predict_surv(t, x)
-        t_np, _, _ = to_numpy(t, torch.zeros_like(t), x)
-        dens = density_from_survival(t_np, surv.numpy())
-        return as_output(dens)
+        surv, t_np = self._surv64(t, x)
+        return as_output(density_from_survival(t_np, surv))
 
     def predict_hazard(self, t: Tensor, x: Tensor) -> Tensor:
-        dens = self.predict_density(t, x)
-        surv = self.predict_surv(t, x)
-        h = dens.numpy() / np.clip(surv.numpy(), np.finfo(np.float64).tiny, 1.0)
-        return as_output(np.clip(h, 0.0, 1e3))
+        surv, t_np = self._surv64(t, x)
+        return as_output(hazard_from_survival(t_np, surv))
 
     def predict_risk(self, x: Tensor) -> Tensor:
         if self.model is None:
@@ -358,25 +358,25 @@ class DeepHit(SurvivalMethod):
             self.interpolator = self.model.interpolate(sub=10, scheme="const_pdf")
         return FitResult(wall_time_s=info.get("wall_time_s", time.perf_counter()), converged=converged, info=info)
 
-    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+    def _surv64(self, t: Tensor, x: Tensor) -> tuple[np.ndarray, np.ndarray]:
+        """Survival as float64 (m, n) plus the query times; never cast to float32."""
         if self.model is None or self.interpolator is None:
             raise RuntimeError("DeepHit has not been fit")
         t_np, _, x_np = to_numpy(t, torch.zeros_like(t), x)
         x_np = x_np.astype(np.float32)
         surv_df = self.interpolator.predict_surv_df(x_np)
-        return as_output(_df_to_surv(surv_df, t_np))
+        return _df_to_surv(surv_df, t_np), t_np
+
+    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+        return as_output(self._surv64(t, x)[0])
 
     def predict_density(self, t: Tensor, x: Tensor) -> Tensor:
-        surv = self.predict_surv(t, x)
-        t_np, _, _ = to_numpy(t, torch.zeros_like(t), x)
-        dens = density_from_survival(t_np, surv.numpy())
-        return as_output(dens)
+        surv, t_np = self._surv64(t, x)
+        return as_output(density_from_survival(t_np, surv))
 
     def predict_hazard(self, t: Tensor, x: Tensor) -> Tensor:
-        dens = self.predict_density(t, x)
-        surv = self.predict_surv(t, x)
-        h = dens.numpy() / np.clip(surv.numpy(), np.finfo(np.float64).tiny, 1.0)
-        return as_output(np.clip(h, 0.0, 1e3))
+        surv, t_np = self._surv64(t, x)
+        return as_output(hazard_from_survival(t_np, surv))
 
     def predict_risk(self, x: Tensor) -> Tensor:
         if self.model is None:

@@ -153,6 +153,13 @@ def hazard_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:
     baselines"). First-order edges; noise in ``surv`` is amplified by the
     differentiation, so callers should pass a sufficiently fine grid and/or
     smooth S first -- this is documented per method wherever used.
+
+    ``surv`` must stay float64 up to this call: for subjects with very high
+    hazard, late-time S reaches ~1e-30, which float32 (min normal ~1e-38, and
+    a coarse mantissa) corrupts -- casting through the float32 interface
+    tensors turned those tails into spikes that dominated HRE (Weibull-AFT,
+    S1 n=5000: 801.7 vs 0.225 in float64). ``t_grid`` need not be sorted or
+    distinct (see :func:`density_from_survival`).
     """
     tg = np.asarray(t_grid, dtype=np.float64).ravel()
     s = np.asarray(surv, dtype=np.float64)
@@ -160,9 +167,16 @@ def hazard_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:
         raise ValueError("surv must have one row per grid time")
     if tg.size <= 1:
         return np.zeros_like(s)
-    log_s = np.log(np.clip(s, np.finfo(np.float64).tiny, 1.0))
-    dlog = np.gradient(log_s, tg, axis=0, edge_order=1)
-    return np.clip(-dlog, 0.0, None)
+    order = np.argsort(tg, kind="stable")
+    uniq, first_idx, inverse = np.unique(tg[order], return_index=True, return_inverse=True)
+    if uniq.size <= 1:
+        return np.zeros_like(s)
+    log_s = np.log(np.clip(s[order][first_idx], np.finfo(np.float64).tiny, 1.0))
+    dlog = np.gradient(log_s, uniq, axis=0, edge_order=1)
+    haz_sorted = np.clip(-dlog, 0.0, None)[inverse]
+    out = np.empty_like(haz_sorted)
+    out[order] = haz_sorted
+    return out
 
 
 def density_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:

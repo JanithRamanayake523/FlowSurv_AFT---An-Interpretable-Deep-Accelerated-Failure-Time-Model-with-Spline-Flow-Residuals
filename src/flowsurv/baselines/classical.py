@@ -93,27 +93,28 @@ class _LifelinesMethod(SurvivalMethod):
             warnings.warn(f"{self.name} fit failed: {e!r}")
         return FitResult(wall_time_s=time.perf_counter() - start, converged=converged, info=info)
 
-    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+    def _surv64(self, t: Tensor, x: Tensor) -> tuple[np.ndarray, np.ndarray]:
+        """Survival as float64 (m, n) plus the query times; never cast to float32."""
         if self.model is None or getattr(self.model, "params_", None) is None:
             raise RuntimeError(f"{self.name} has not been fit successfully")
         t_np, _, x_np = to_numpy(t, torch.zeros_like(t), x)
         times = np.sort(np.unique(t_np))
         df = self._make_df(np.zeros(x_np.shape[0]), np.ones(x_np.shape[0]), x_np)
         surv = self._predict_surv_frame(df, times, x_np)
-        surv_arr = interp_surv(surv.index.to_numpy(), surv.to_numpy(), t_np)
-        return as_output(surv_arr)
+        return interp_surv(surv.index.to_numpy(), surv.to_numpy(), t_np), t_np
+
+    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+        return as_output(self._surv64(t, x)[0])
 
     def predict_density(self, t: Tensor, x: Tensor) -> Tensor:
-        surv = self.predict_surv(t, x)
-        t_np, _, _ = to_numpy(t, torch.zeros_like(t), x)
-        dens = density_from_survival(t_np, surv.numpy())
-        return as_output(dens)
+        surv, t_np = self._surv64(t, x)
+        return as_output(density_from_survival(t_np, surv))
 
     def predict_hazard(self, t: Tensor, x: Tensor) -> Tensor:
-        dens = self.predict_density(t, x)
-        surv = self.predict_surv(t, x)
-        h = dens.numpy() / np.clip(surv.numpy(), np.finfo(np.float64).tiny, 1.0)
-        return as_output(np.clip(h, 0.0, 1e3))
+        # h = -d log S / dt from float64 survival: the float32 interface cast
+        # corrupts ~1e-30 tail survival of high-hazard subjects (HRE spikes).
+        surv, t_np = self._surv64(t, x)
+        return as_output(hazard_from_survival(t_np, surv))
 
     def predict_risk(self, x: Tensor) -> Tensor:
         _, _, x_np = to_numpy(torch.zeros(x.shape[0]), torch.zeros(x.shape[0]), x)
@@ -297,22 +298,21 @@ class RandomSurvivalForest(SurvivalMethod):
         surv = np.stack([np.atleast_1d(fn(times_eval)) for fn in funcs], axis=0).T
         return times, surv, t_np
 
-    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+    def _surv64(self, t: Tensor, x: Tensor) -> tuple[np.ndarray, np.ndarray]:
+        """Survival as float64 (m, n) plus the query times; never cast to float32."""
         times, surv, t_query = self._surv_grid(t, x)
-        surv_arr = interp_surv(times, surv, t_query)
-        return as_output(surv_arr)
+        return interp_surv(times, surv, t_query), t_query
+
+    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+        return as_output(self._surv64(t, x)[0])
 
     def predict_density(self, t: Tensor, x: Tensor) -> Tensor:
-        surv = self.predict_surv(t, x)
-        t_np, _, _ = to_numpy(t, torch.zeros_like(t), x)
-        dens = density_from_survival(t_np, surv.numpy())
-        return as_output(dens)
+        surv, t_np = self._surv64(t, x)
+        return as_output(density_from_survival(t_np, surv))
 
     def predict_hazard(self, t: Tensor, x: Tensor) -> Tensor:
-        dens = self.predict_density(t, x)
-        surv = self.predict_surv(t, x)
-        h = dens.numpy() / np.clip(surv.numpy(), np.finfo(np.float64).tiny, 1.0)
-        return as_output(np.clip(h, 0.0, 1e3))
+        surv, t_np = self._surv64(t, x)
+        return as_output(hazard_from_survival(t_np, surv))
 
     def predict_risk(self, x: Tensor) -> Tensor:
         if self.model is None:
