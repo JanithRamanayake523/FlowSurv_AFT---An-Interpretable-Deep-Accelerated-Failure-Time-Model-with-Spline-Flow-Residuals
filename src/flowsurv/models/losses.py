@@ -15,8 +15,8 @@ def right_censored_nll(model, t: Tensor, d: Tensor, x: Tensor) -> Tensor:
 
     -mean_i [ d_i * log f(t_i|x_i) + (1 - d_i) * log S(t_i|x_i) ]
     """
-    log_f = model.log_density(t, x)
-    log_s = model.log_survival(t, x)
+    log_f = model.log_density(t, x, paired=True)  # one time per subject
+    log_s = model.log_survival(t, x, paired=True)
     ll = d * log_f + (1 - d) * log_s
     return -ll.mean()
 

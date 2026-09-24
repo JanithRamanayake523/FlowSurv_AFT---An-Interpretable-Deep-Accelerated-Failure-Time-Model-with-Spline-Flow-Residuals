@@ -201,6 +201,8 @@ class FlowSurvAFT(nn.Module):
         zuko derivatives are softplus(raw + shift) with raw = 0 the identity
         slope, so shrinking the raw derivative parameters shrinks the spline
         toward the identity (smooth, no tail wiggle under heavy censoring).
+        It is a weak soft regularizer, not an identifiability safeguard for mu
+        (that is the job of the strict-AFT ablation and quantile time ratios).
         Returns 0 for flows without RQS parameters (e.g. the CNF baseline).
         """
         x = torch.as_tensor(x)
