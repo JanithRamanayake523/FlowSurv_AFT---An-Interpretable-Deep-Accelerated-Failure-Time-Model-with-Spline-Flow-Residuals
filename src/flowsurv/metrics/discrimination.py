@@ -3,11 +3,14 @@
 Uno's C is the ONLY concordance variant reported in the study
 (pre-registration Sec. 3, anti-C-hacking per Sonabend 2022):
 
-    C_U = [sum_{i != j} d_i * G(t_i)^{-2} * 1{t_i < t_j} * 1{r_i > r_j}]
-          / [sum_{i != j} d_i * G(t_i)^{-2} * 1{t_i < t_j}]
+    C_U = [sum_{i != j} d_i * G(t_i-)^{-2} * 1{t_i < t_j} * 1{t_i <= tau} * 1{r_i > r_j}]
+          / [sum_{i != j} d_i * G(t_i-)^{-2} * 1{t_i < t_j} * 1{t_i <= tau}]
 
-with G the Kaplan-Meier estimate of the censoring distribution and r the
-model risk score (higher = riskier).
+with G the Kaplan-Meier estimate of the censoring distribution (G(t-) its
+left limit), r the model risk score (higher = riskier) and tau the
+truncation horizon (default: 90th percentile of observed times, the same
+tau as IBS/ICI; Uno et al. 2011 define the estimator on [0, tau] with
+G(tau) > 0 so that events near the end of follow-up cannot dominate).
 
 Inputs are torch tensors (float32 in); computations run in float64
 internally and results are returned as python floats.
@@ -21,7 +24,7 @@ from torch import Tensor
 _G_MIN = 1e-7  # clamp for the censoring KM estimate (G = 0 beyond the last censoring time)
 
 
-def kaplan_meier_cdf(t: Tensor, d: Tensor, grid: Tensor) -> Tensor:
+def kaplan_meier_cdf(t: Tensor, d: Tensor, grid: Tensor, *, left: bool = False) -> Tensor:
     """Kaplan-Meier estimate of the CENSORING distribution, evaluated on ``grid``.
 
     The event indicator of the censoring distribution is ``1 - d`` (flip of
@@ -30,7 +33,9 @@ def kaplan_meier_cdf(t: Tensor, d: Tensor, grid: Tensor) -> Tensor:
     function needed for IPCW weights is ``1 - kaplan_meier_cdf(...)``.
 
     Right-continuous step function: the value at s uses all censoring times
-    <= s. O(n log n) via sorting.
+    <= s. With ``left=True`` the left limit is returned instead (censoring
+    times strictly < s), i.e. G(s-) = 1 - F(s-), which is what Uno's and
+    Graf's IPCW weights for an event at s require. O(n log n) via sorting.
     """
     t = torch.as_tensor(t, dtype=torch.float64).flatten()
     d = torch.as_tensor(d, dtype=torch.float64).flatten()
@@ -47,13 +52,13 @@ def kaplan_meier_cdf(t: Tensor, d: Tensor, grid: Tensor) -> Tensor:
     surv_u = torch.cumprod(1.0 - d_c / n_risk, dim=0)  # KM survival of C at unique times
 
     # evaluate on the grid: step function, value at s = survival at last uniq <= s
-    idx = torch.searchsorted(uniq, grid, right=True) - 1
+    idx = torch.searchsorted(uniq, grid, right=not left) - 1
     surv = torch.where(idx >= 0, surv_u[idx.clamp_min(0)], torch.ones_like(grid))
     return 1.0 - surv
 
 
-def unos_c(risk: Tensor, t: Tensor, d: Tensor) -> float:
-    """Uno's C-statistic with IPCW weights G(t_i)^{-2} (Methodology Sec. 3.3).
+def unos_c(risk: Tensor, t: Tensor, d: Tensor, tau: float | None = None) -> float:
+    """Uno's C-statistic with IPCW weights G(t_i-)^{-2}, truncated at ``tau``.
 
     Tied risk scores count as half-concordant (standard convention, matches
     scikit-survival). Undefined on an all-censored fold or when no comparable
@@ -66,9 +71,13 @@ def unos_c(risk: Tensor, t: Tensor, d: Tensor) -> float:
     t = torch.as_tensor(t, dtype=torch.float64).flatten()
     d = torch.as_tensor(d, dtype=torch.float64).flatten()
 
-    # G(t_i) per subject: survival of the censoring law at the subject's time
-    g_hat = (1.0 - kaplan_meier_cdf(t, d, t)).clamp_min(_G_MIN)
-    w = d / g_hat.pow(2)  # d_i * G(t_i)^{-2}; zero weight for censored subjects
+    if tau is None:
+        tau = float(torch.quantile(t, 0.9))
+
+    # G(t_i-) per subject: left limit of the censoring survival at the subject's time
+    g_hat = (1.0 - kaplan_meier_cdf(t, d, t, left=True)).clamp_min(_G_MIN)
+    # d_i * G(t_i-)^{-2}; zero weight for censored subjects and events after tau
+    w = d * (t <= tau).to(torch.float64) / g_hat.pow(2)
 
     comparable = t.unsqueeze(1) < t.unsqueeze(0)  # [i, j]: t_i < t_j (excludes i == j)
     weight = w.unsqueeze(1) * comparable

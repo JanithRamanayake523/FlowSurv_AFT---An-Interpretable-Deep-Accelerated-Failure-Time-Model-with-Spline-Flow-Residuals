@@ -2,11 +2,12 @@
 
 Gerds & Schumacher (2006) inverse-probability-of-censoring weighting:
 
-    BS(s) = mean_i [ 1{t_i <= s, d_i = 1} * S(s|x_i)^2 / G(t_i)
+    BS(s) = mean_i [ 1{t_i <= s, d_i = 1} * S(s|x_i)^2 / G(t_i-)
                     + 1{t_i > s} * (1 - S(s|x_i))^2 / G(s) ]
     IBS   = tau^{-1} * int_0^tau BS(s) ds
 
-with G the Kaplan-Meier estimate of the censoring distribution. tau is the
+with G the Kaplan-Meier estimate of the censoring distribution (G(t-) the
+left limit, per Graf et al. 1999). tau is the
 90th percentile of observed test times (pre-registration Sec. 3).
 
 Inputs are torch tensors (float32 in); computations run in float64
@@ -56,7 +57,7 @@ def integrated_brier_score(
     surv_r = surv[mask]
 
     # censoring KM: G(t_i) per subject and G(s) per grid point
-    g_ti = (1.0 - kaplan_meier_cdf(t, d, t)).clamp_min(_G_MIN)
+    g_ti = (1.0 - kaplan_meier_cdf(t, d, t, left=True)).clamp_min(_G_MIN)
     g_s = (1.0 - kaplan_meier_cdf(t, d, grid_r)).clamp_min(_G_MIN)
 
     # (m, n) indicator matrices; a subject censored exactly at s enters

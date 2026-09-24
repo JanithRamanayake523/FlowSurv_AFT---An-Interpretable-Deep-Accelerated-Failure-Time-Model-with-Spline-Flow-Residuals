@@ -63,6 +63,36 @@ def hazard_recovery_error(
     return float(per_subject.mean())
 
 
+def cumulative_hazard_error(
+    h_pred: Tensor,
+    h_true: Tensor,
+    grid: Tensor,
+    weights: Tensor | None = None,
+) -> float:
+    """Scale-robust companion to HRE (exploratory): mean over subjects of
+    int |H_pred(t) - H_true(t)| w(t) dt, with H the trapezoid cumulative
+    hazard on ``grid``.
+
+    HRE squares a hazard difference, so a handful of subjects with extreme
+    true hazards (S5 up to ~1e5; S4 with k = 0.7 diverges as t -> 0) can
+    decide a cell. The cumulative hazard is an integral of the hazard and its
+    absolute error is far less dominated by such spikes. Same default weights
+    as :func:`hazard_recovery_error`; not pre-registered, reported alongside
+    HRE and never used for a confirmatory claim.
+    """
+    h_pred = torch.as_tensor(h_pred, dtype=torch.float64)
+    h_true = torch.as_tensor(h_true, dtype=torch.float64)
+    grid = torch.as_tensor(grid, dtype=torch.float64).flatten()
+    assert torch.isfinite(h_pred).all() and torch.isfinite(h_true).all(), (
+        "h_pred/h_true must be finite; filter methods without hazard support upstream"
+    )
+    w = _default_weights(h_true, grid) if weights is None else torch.as_tensor(weights, dtype=torch.float64).flatten()
+    cum_pred = torch.cumulative_trapezoid(h_pred, grid, dim=0)
+    cum_true = torch.cumulative_trapezoid(h_true, grid, dim=0)
+    per_subject = torch.trapezoid((cum_pred - cum_true).abs() * w[1:].unsqueeze(1), grid[1:], dim=0)
+    return float(per_subject.mean())
+
+
 def cdf_fidelity(f_pred: Tensor, f_true: Tensor, grid: Tensor) -> dict:
     """Per-subject KS and W1 between estimated and true conditional CDFs.
 
