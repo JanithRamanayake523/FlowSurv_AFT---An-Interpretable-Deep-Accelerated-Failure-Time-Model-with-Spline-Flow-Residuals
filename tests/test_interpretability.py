@@ -132,3 +132,36 @@ def test_save_case_studies_roundtrip(tmp_path, s1_large, s1_frozen_fit):
     path = save_case_studies([table], path=tmp_path / "case_studies.parquet")
     reloaded = pd.read_parquet(path)
     pd.testing.assert_frame_equal(reloaded, table)
+
+
+def test_quantile_time_ratios_and_aft_ness():
+    """TR_q is flat in q (spread ~ 0) for the strict-AFT model and varies for a
+    conditional flow whose spline depends on x."""
+    from flowsurv.eval.interpretability import aft_ness_summary, quantile_time_ratio_table
+    from flowsurv.models import FlowSurvAFT
+
+    torch.manual_seed(0)
+    x = torch.randn(40, 3)
+    names = ["a", "b", "c"]
+
+    strict = FlowSurvAFT(3, hidden=8, n_blocks=1, bins=4, conditional_flow=False)
+    torch.nn.init.normal_(strict.encoder.mu_head.weight, std=0.5)
+    torch.nn.init.normal_(strict.encoder.spline_head.p, std=0.3)
+    cond = FlowSurvAFT(3, hidden=8, n_blocks=1, bins=4)
+    torch.nn.init.normal_(cond.encoder.mu_head.weight, std=0.5)
+    torch.nn.init.normal_(cond.encoder.spline_head.weight, std=0.5)
+
+    s_tab = quantile_time_ratio_table(strict, x, names, "sim")
+    c_tab = quantile_time_ratio_table(cond, x, names, "sim")
+    assert set(s_tab.columns) == {"dataset", "covariate", "subject", "q", "tr_q"}
+    assert len(s_tab) == 3 * 40 * 5
+    assert aft_ness_summary(s_tab)["spread_mean"].max() < 1e-3
+    assert aft_ness_summary(c_tab)["spread_mean"].min() > 1e-2
+    # exp(mu_a - mu_b) equals TR_q for the strict-AFT model at every q
+    with torch.no_grad():
+        mu_a = strict.location(x)
+        xb = x.clone()
+        xb[:, 0] = x[:, 0].mean()
+        tr = torch.exp(mu_a - strict.location(xb)).numpy()
+    sub = s_tab[(s_tab.covariate == "a") & (s_tab.q == 0.5)].sort_values("subject")
+    np.testing.assert_allclose(sub["tr_q"].to_numpy(), tr, rtol=1e-3)

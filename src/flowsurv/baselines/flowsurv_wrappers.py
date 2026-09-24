@@ -12,8 +12,18 @@ import time
 import torch
 from torch import Tensor
 
-from ..models import FlowSurvAFT, FlowSurvGauss, TrainConfig, fit, right_censored_nll
+from ..models import FlowSurvAFT, FlowSurvGauss, FlowSurvGumbel, TrainConfig, fit
 from .common import FitResult, SurvivalMethod, as_output, to_numpy
+
+
+def mode_kwargs(method, paired: bool) -> dict:
+    """Explicit grid/paired prediction mode for the FlowSurv wrappers.
+
+    A 200-point evaluation grid and a test fold with exactly 200 subjects are
+    indistinguishable by shape, so callers state which one they mean. Other
+    methods do not take the argument and get no extra kwargs.
+    """
+    return {"paired": paired} if isinstance(method, _FlowSurvWrapper) else {}
 
 
 class _FlowSurvWrapper(SurvivalMethod):
@@ -23,9 +33,11 @@ class _FlowSurvWrapper(SurvivalMethod):
     supports_density: bool = True
     supports_hazard: bool = True
     _cls: type = FlowSurvAFT
+    #: pre-registered L2 penalty on spline derivatives (prereg Sec. 4); 0 for models without a spline
+    _spline_l2: float = 1e-5
 
     def __init__(self) -> None:
-        self.model: FlowSurvAFT | FlowSurvGauss | None = None
+        self.model: FlowSurvAFT | FlowSurvGauss | FlowSurvGumbel | None = None
         self.name: str = "flowsurv_aft"
         self.tuning_space: dict[str, list] = {
             "hidden": [64, 128],
@@ -35,8 +47,14 @@ class _FlowSurvWrapper(SurvivalMethod):
             "n_spline_blocks": [1, 2, 3],
         }
 
-    def _make_model(self, n_features: int, **hyper) -> FlowSurvAFT | FlowSurvGauss:
+    def _make_model(self, n_features: int, **hyper) -> FlowSurvAFT | FlowSurvGauss | FlowSurvGumbel:
         raise NotImplementedError
+
+    def _new_model(self, n_features: int, mean_log_t: float, hyper: dict):
+        """Build the model and centre its identity warm start on the data log-time scale."""
+        model = self._make_model(n_features, **hyper)
+        model.encoder.mu_offset.fill_(mean_log_t)
+        return model
 
     def fit(
         self,
@@ -58,16 +76,19 @@ class _FlowSurvWrapper(SurvivalMethod):
             max_epochs=hyper.pop("max_epochs", 500),
             patience=hyper.pop("patience", 30),
             grad_clip=hyper.pop("grad_clip", 1.0),
+            spline_l2=hyper.pop("spline_l2", self._spline_l2),
             seed=seed,
             device=device,
         )
-        self.model = self._make_model(int(x.shape[1]), **hyper)
-        if val is not None:
-            # early stopping already uses a validation split; ignore external val
-            pass
+        # Centre the warm start (mu = 0 means t = 1) on the data log-time scale.
+        mean_log_t = float(t.clamp_min(torch.finfo(t.dtype).tiny).log().mean())
+        # The caller's validation split is used for early stopping; without one
+        # the trainer carves 15% out of the training data.
+        val_data = None if val is None else tuple(torch.as_tensor(v, dtype=torch.float32) for v in val)
+        self.model = self._new_model(int(x.shape[1]), mean_log_t, hyper)
         start = time.perf_counter()
         try:
-            res = fit(self.model, t, d, x, config)
+            res = fit(self.model, t, d, x, config, val=val_data)
         except RuntimeError as e:
             # Some CUDA installs are missing the NVRTC JIT component that
             # torch.special.{erfc,erfinv,log_ndtr} compile through (needed by
@@ -76,8 +97,8 @@ class _FlowSurvWrapper(SurvivalMethod):
             # Retry once on CPU rather than failing the whole fit.
             if "nvrtc" in str(e).lower() and config.device != "cpu":
                 config = TrainConfig(**{**config.__dict__, "device": "cpu"})
-                self.model = self._make_model(int(x.shape[1]), **hyper)
-                res = fit(self.model, t, d, x, config)
+                self.model = self._new_model(int(x.shape[1]), mean_log_t, hyper)
+                res = fit(self.model, t, d, x, config, val=val_data)
             else:
                 raise
         info = {
@@ -94,32 +115,32 @@ class _FlowSurvWrapper(SurvivalMethod):
     def _device(self) -> torch.device:
         return next(self.model.parameters()).device
 
-    def predict_surv(self, t: Tensor, x: Tensor) -> Tensor:
+    def predict_surv(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         if self.model is None:
             raise RuntimeError("fit() must be called before predict_surv()")
         t, x = (torch.as_tensor(v, dtype=torch.float32) for v in (t, x))
         dev = self._device()
         t, x = t.to(dev), x.to(dev)
         with torch.no_grad():
-            return as_output(self.model.survival(t, x).cpu().numpy())
+            return as_output(self.model.survival(t, x, paired).cpu().numpy())
 
-    def predict_density(self, t: Tensor, x: Tensor) -> Tensor:
+    def predict_density(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         if self.model is None:
             raise RuntimeError("fit() must be called before predict_density()")
         t, x = (torch.as_tensor(v, dtype=torch.float32) for v in (t, x))
         dev = self._device()
         t, x = t.to(dev), x.to(dev)
         with torch.no_grad():
-            return as_output(self.model.density(t, x).cpu().numpy())
+            return as_output(self.model.density(t, x, paired).cpu().numpy())
 
-    def predict_hazard(self, t: Tensor, x: Tensor) -> Tensor:
+    def predict_hazard(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         if self.model is None:
             raise RuntimeError("fit() must be called before predict_hazard()")
         t, x = (torch.as_tensor(v, dtype=torch.float32) for v in (t, x))
         dev = self._device()
         t, x = t.to(dev), x.to(dev)
         with torch.no_grad():
-            return as_output(self.model.hazard(t, x).cpu().numpy())
+            return as_output(self.model.hazard(t, x, paired).cpu().numpy())
 
     def predict_risk(self, x: Tensor) -> Tensor:
         if self.model is None:
@@ -141,6 +162,7 @@ class FlowSurvAFTMethod(_FlowSurvWrapper):
 
     name: str = "flowsurv_aft"
     _cls = FlowSurvAFT
+    _conditional_flow: bool = True
 
     def _make_model(self, n_features: int, **hyper) -> FlowSurvAFT:
         return FlowSurvAFT(
@@ -149,9 +171,26 @@ class FlowSurvAFTMethod(_FlowSurvWrapper):
             n_blocks=hyper.get("n_blocks", 2),
             dropout=hyper.get("dropout", 0.1),
             bins=hyper.get("bins", 8),
-            bound=hyper.get("bound", 6.0),
+            bound=hyper.get("bound", 4.0),  # prereg Sec. 4: spline domain [-4, 4]
             n_spline_blocks=hyper.get("n_spline_blocks", 1),
+            conditional_flow=self._conditional_flow,
         )
+
+
+class FlowSurvStrictAFTMethod(FlowSurvAFTMethod):
+    """Strict-AFT ablation: unconditional residual flow (eps independent of x).
+
+    Identical to FlowSurv-AFT except the spline parameters are global, so
+    exp(mu(a) - mu(b)) is exactly an AFT time ratio (supervisor review item 3,
+    used for H4).
+    """
+
+    name: str = "flowsurv_strict_aft"
+    _conditional_flow: bool = False
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = "flowsurv_strict_aft"
 
 
 class FlowSurvGaussMethod(_FlowSurvWrapper):
@@ -159,6 +198,7 @@ class FlowSurvGaussMethod(_FlowSurvWrapper):
 
     name: str = "flowsurv_gauss"
     _cls = FlowSurvGauss
+    _spline_l2: float = 0.0  # no spline in the identity-flow ablations
 
     def __init__(self) -> None:
         super().__init__()
@@ -170,6 +210,30 @@ class FlowSurvGaussMethod(_FlowSurvWrapper):
 
     def _make_model(self, n_features: int, **hyper) -> FlowSurvGauss:
         return FlowSurvGauss(
+            n_features,
+            hidden=hyper.get("hidden", 128),
+            n_blocks=hyper.get("n_blocks", 2),
+            dropout=hyper.get("dropout", 0.1),
+        )
+
+
+class FlowSurvGumbelMethod(FlowSurvGaussMethod):
+    """Identity-flow minimum-Gumbel ablation: a Weibull AFT with deep mu(x), sigma(x).
+
+    Diagnostic for Deviation 1 (supervisor review item 2): scenarios whose
+    covariate effect enters only through mu(x) and sigma(x) around a fixed
+    residual law need no flow conditioning.
+    """
+
+    name: str = "flowsurv_gumbel"
+    _cls = FlowSurvGumbel
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = "flowsurv_gumbel"
+
+    def _make_model(self, n_features: int, **hyper) -> FlowSurvGumbel:
+        return FlowSurvGumbel(
             n_features,
             hidden=hyper.get("hidden", 128),
             n_blocks=hyper.get("n_blocks", 2),

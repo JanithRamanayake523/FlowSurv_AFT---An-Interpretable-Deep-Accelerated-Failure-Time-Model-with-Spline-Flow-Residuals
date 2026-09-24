@@ -41,6 +41,10 @@ class FlowSurvAFT(nn.Module):
         bound: spline domain [-bound, bound] in standardized residual units,
             identity tails outside (Sec. 2.4 fixes 4).
         n_spline_blocks: number K of stacked RQS blocks (Sec. 2.4 tunes 1-3).
+        conditional_flow: False gives the strict-AFT ablation: the spline
+            parameters and sigma are global (independent of x), so the
+            residual law is one for all subjects and exp(mu(a) - mu(b)) is
+            exactly a time ratio at every quantile.
     """
 
     def __init__(
@@ -52,23 +56,36 @@ class FlowSurvAFT(nn.Module):
         bins: int = 8,
         bound: float = 4.0,
         n_spline_blocks: int = 1,
+        conditional_flow: bool = True,
     ) -> None:
         super().__init__()
         self.flow = ConditionalRQSFlow(bins=bins, bound=bound, n_blocks=n_spline_blocks)
         self.encoder = FlowSurvEncoder(
-            n_features, hidden=hidden, n_blocks=n_blocks, dropout=dropout, flow=self.flow
+            n_features,
+            hidden=hidden,
+            n_blocks=n_blocks,
+            dropout=dropout,
+            flow=self.flow,
+            conditional_flow=conditional_flow,
         )
 
     # ------------------------------------------------------------------
     # internal helpers
 
-    def _forward_base(self, t: Tensor, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def _forward_base(
+        self, t: Tensor, x: Tensor, paired: bool | None = None
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """(z = g(u(t)), log|g'(u(t))|, log t, sigma) for times ``t`` given ``x``.
 
         - Paired: ``t`` has the same leading shape as ``x.shape[:-1]`` (e.g.
           ``t`` (n,) and ``x`` (n, p), or ``t`` (Q, n) and ``x`` (Q, n, p));
           returns tensors of the same leading shape.
         - Grid: ``t`` (m,) and ``x`` (n, p) returns (m, n) matrices.
+
+        ``paired`` makes the mode explicit. ``None`` keeps the shape heuristic
+        (batched ``x``, or ``t`` with as many elements as subjects, is paired),
+        which is ambiguous when a grid has exactly as many points as there are
+        subjects; every internal caller therefore passes it explicitly.
         """
         x = torch.as_tensor(x)
         orig_shape = x.shape[:-1]
@@ -79,7 +96,8 @@ class FlowSurvAFT(nn.Module):
         if log_t.dim() == 0:
             log_t = log_t.unsqueeze(0)
 
-        paired = x.dim() != 2 or (log_t.dim() == 1 and log_t.numel() == mu.numel())
+        if paired is None:
+            paired = x.dim() != 2 or (log_t.dim() == 1 and log_t.numel() == mu.numel())
         if paired:
             t_flat = log_t.reshape(mu.shape)
             u = (t_flat - mu) / sigma
@@ -105,37 +123,37 @@ class FlowSurvAFT(nn.Module):
     # ------------------------------------------------------------------
     # exact closed-form outputs (Methodology Sec. 2.2.1)
 
-    def log_density(self, t: Tensor, x: Tensor) -> Tensor:
+    def log_density(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """log f(t|x)."""
-        z, ladj, log_t, sigma = self._forward_base(t, x)
+        z, ladj, log_t, sigma = self._forward_base(t, x, paired)
         return self._log_f0(z) + ladj - log_t - sigma.log()
 
-    def density(self, t: Tensor, x: Tensor) -> Tensor:
+    def density(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """f(t|x)."""
-        return self.log_density(t, x).exp()
+        return self.log_density(t, x, paired).exp()
 
-    def log_survival(self, t: Tensor, x: Tensor) -> Tensor:
+    def log_survival(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """log S(t|x) = log sigmoid(-g(u(t))), stable under heavy censoring."""
-        z = self._forward_base(t, x)[0]
+        z = self._forward_base(t, x, paired)[0]
         return F.logsigmoid(-z)
 
-    def survival(self, t: Tensor, x: Tensor) -> Tensor:
+    def survival(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """S(t|x)."""
-        return self.log_survival(t, x).exp()
+        return self.log_survival(t, x, paired).exp()
 
-    def cdf(self, t: Tensor, x: Tensor) -> Tensor:
+    def cdf(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """F(t|x) = sigmoid(g(u(t)))."""
-        z = self._forward_base(t, x)[0]
+        z = self._forward_base(t, x, paired)[0]
         return torch.sigmoid(z)
 
-    def log_cdf(self, t: Tensor, x: Tensor) -> Tensor:
+    def log_cdf(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """log F(t|x) = log sigmoid(g(u(t)))."""
-        z = self._forward_base(t, x)[0]
+        z = self._forward_base(t, x, paired)[0]
         return F.logsigmoid(z)
 
-    def hazard(self, t: Tensor, x: Tensor) -> Tensor:
+    def hazard(self, t: Tensor, x: Tensor, paired: bool | None = None) -> Tensor:
         """h(t|x) = f(t|x) / S(t|x)."""
-        return (self.log_density(t, x) - self.log_survival(t, x)).exp()
+        return (self.log_density(t, x, paired) - self.log_survival(t, x, paired)).exp()
 
     def quantile(self, q: Tensor | float, x: Tensor) -> Tensor:
         """Q(q|x) = exp(mu + sigma * g^{-1}(logit(q))).
@@ -164,6 +182,34 @@ class FlowSurvAFT(nn.Module):
         eps = self.flow.inverse(z_q, params)
         out = torch.exp(mu + sigma * eps)
         return out
+
+    def quantiles(self, q: Tensor | list[float], x: Tensor) -> Tensor:
+        """Q(q_k|x_i) for every level and subject: shape ``(len(q), n)``.
+
+        Convenience over :meth:`quantile`, whose batched-``x`` convention
+        needs the covariates tiled per level; this tiles them for you.
+        """
+        x = torch.as_tensor(x)
+        q = torch.as_tensor(q, dtype=x.dtype, device=x.device).flatten()
+        x_tiled = x.unsqueeze(0).expand(q.numel(), *x.shape)
+        return self.quantile(q, x_tiled).reshape(q.numel(), x.shape[0])
+
+    def spline_derivative_penalty(self, x: Tensor) -> Tensor:
+        """Mean over ``x`` of the squared interior-derivative parameters.
+
+        The pre-registered "L2 penalty on spline derivatives" (prereg Sec. 4):
+        zuko derivatives are softplus(raw + shift) with raw = 0 the identity
+        slope, so shrinking the raw derivative parameters shrinks the spline
+        toward the identity (smooth, no tail wiggle under heavy censoring).
+        Returns 0 for flows without RQS parameters (e.g. the CNF baseline).
+        """
+        x = torch.as_tensor(x)
+        if not isinstance(self.flow, ConditionalRQSFlow):
+            return torch.zeros((), device=x.device)
+        _mu, _sigma, params = self.encoder(x)
+        bins = self.flow.bins
+        raw_d = [c[..., 2 * bins :] for c in params.split(self.flow.params_per_block, dim=-1)]
+        return sum(r.pow(2).sum(dim=-1) for r in raw_d).mean()
 
     def sample(self, x: Tensor, n: int = 1, generator: torch.Generator | None = None) -> Tensor:
         """One-pass samples t = exp(mu + sigma * g^{-1}(z)), z ~ Logistic(0, 1).
@@ -196,10 +242,6 @@ class FlowSurvAFT(nn.Module):
 
     def forward(self, t: Tensor, d: Tensor, x: Tensor) -> Tensor:
         """Per-observation right-censored log-likelihood contribution."""
-        log_f = self.log_density(t, x)
-        log_s = self.log_survival(t, x)
-        if log_f.dim() == 2:
-            log_f = torch.diagonal(log_f)
-        if log_s.dim() == 2:
-            log_s = torch.diagonal(log_s)
+        log_f = self.log_density(t, x, paired=True)
+        log_s = self.log_survival(t, x, paired=True)
         return d * log_f + (1 - d) * log_s

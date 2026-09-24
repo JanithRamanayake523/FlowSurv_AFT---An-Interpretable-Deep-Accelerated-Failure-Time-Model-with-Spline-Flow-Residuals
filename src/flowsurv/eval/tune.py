@@ -33,6 +33,7 @@ import pandas as pd
 import torch
 
 from ..baselines import METHODS
+from ..baselines.flowsurv_wrappers import mode_kwargs
 from ..data import (
     REAL_DATASETS,
     CellConfig,
@@ -96,8 +97,8 @@ def _per_subject(pred) -> torch.Tensor:
 
 def censored_val_nll(method, val: dict) -> float:
     """Exact right-censored validation NLL from density/survival predictions."""
-    log_f = _per_subject(method.predict_density(val["t"], val["x"])).clamp_min(1e-12).log()
-    log_s = _per_subject(method.predict_surv(val["t"], val["x"])).clamp_min(1e-12).log()
+    log_f = _per_subject(method.predict_density(val["t"], val["x"], **mode_kwargs(method, True))).clamp_min(1e-12).log()
+    log_s = _per_subject(method.predict_surv(val["t"], val["x"], **mode_kwargs(method, True))).clamp_min(1e-12).log()
     d = torch.as_tensor(val["d"], dtype=torch.float32)
     ll = d * log_f + (1.0 - d) * log_s
     return float(-ll.mean())

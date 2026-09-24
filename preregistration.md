@@ -93,6 +93,14 @@ All three interventions converged on the same negative result, taken as sufficie
 
 **Consequence for the paper's framing.** Document 1's objective O2 and the differentiator claims are updated (see `docs/01_Introduction_Literature_Aims.md`, same date) to state the flexibility claim as scoped to residual-shape and nonlinear-location hazard recovery, not as a blanket claim across all non-standard shapes — a more defensible claim than the original, and one that delineates exactly where an AFT-decomposed flow helps and where a mixture model remains preferable, rather than asserting a universal win.
 
+**Correction to Deviation 1 (2026-09-24): the mechanistic rationale was wrong for S3 and S4, and the S4 loss did not reproduce.** The paragraphs above are left as originally written so the record shows what was claimed.
+
+*What was wrong.* The "Interpretation" and "why this is not cherry-picking" paragraphs say S4 is not a location/scale/residual-shape perturbation and S3 is. Working through the DGPs (Methodology §3.1) shows the opposite. **S4 is exactly an AFT model:** log T = log lam_g + W/k_g with W a standard minimum-Gumbel variable independent of x, so x enters only through mu(x) and sigma(x) and FlowSurv can represent S4 without any flow conditioning. **S3 is not an AFT model:** its second mixture component (LN(2.5, 0.3)) does not move with x, so the standardized residual's shape changes with x and only the conditional flow can capture it. The split was therefore not decidable a priori on the stated ground.
+
+*Evidence (diagnostic run 2026-09-24, corrected pipeline).* FlowSurv-AFT, FlowSurv-Gumbel (flow frozen at identity, minimum-Gumbel base, deep mu(x) and sigma(x): a Weibull AFT), FlowSurv-Gauss and DSM, all at class-default configurations (no tuning), 5 replications per cell, Type I, 20% censoring, median HRE ratio to DSM: **S4 n=5000:** FlowSurv-AFT 0.71, FlowSurv-Gumbel 0.40, FlowSurv-Gauss 1.15. **S4 n=1000:** 1.15, 1.21, 0.96. **S3 n=5000** (non-AFT): 0.20, 1.01, 0.87 (the flow wins; the identity-flow AFT models do not). **S1 n=5000** (H3 sanity): FlowSurv-AFT 6.4, FlowSurv-Gumbel 1.02, FlowSurv-Gauss 4.96. So on S4 at n=5000 the pilot's DSM advantage is absent (FlowSurv-AFT is ahead, the Weibull-AFT-with-deep-parameters model further ahead), S4 at n=1000 is a tie, S3 behaves as an x-dependent residual shape predicts, and on S1 the flow itself adds hazard error where the DGP needs none (bearing on H3). Limits: untuned, 5 replications, one censoring level and type, S2 not re-run, and the pilot-versus-now difference bundles several protocol changes (Deviation 5: validation split, spline bound and penalty, log-time centring; Deviation 4 does not touch HRE), so the pilot's S4 gap cannot be attributed to any one of them.
+
+*Consequence.* The mechanistic argument for splitting H1 is withdrawn, and the pilot's S4 loss is not evidence that the AFT decomposition is misaligned with S4. The H1a/H1b split is not relied on: the original H1 and the pooled contrast C1 (S2-S4 vs DSM) will be evaluated and reported as pre-registered on the tuned full grid, with the S3-only and S3+S5 reading reported alongside as descriptive. The framing edits to `docs/01_Introduction_Literature_Aims.md` made under Deviation 1 (flexibility claim scoped to residual-shape and nonlinear-location recovery) should be revisited once the full-grid results are in.
+
 **Deviation 2 (2026-09-22): fixed nonzero default penalizer for the lifelines classical baselines.**
 
 **What was pre-registered.** Methodology §4/§6 specifies Cox-PH, Weibull-AFT, and log-normal AFT as baselines fit by maximum likelihood, with `penalizer` listed as a tunable hyperparameter (candidate grid {0.0, 0.01, 0.1}) but with no default value fixed for the untuned (`is_deep=False`) code path that all three classical methods run through.
@@ -126,6 +134,41 @@ All three interventions converged on the same negative result, taken as sufficie
 **Why this is not post-hoc cherry-picking.** The reduction is a compute-feasibility decision made from a wall-clock benchmark, before any Phase 6 result exists for Ausset-CNF at any cell, and it is fixed at R=20 for every cell uniformly -- not adjusted per scenario, per direction of effect, or in response to any interim finding. It follows the same reps 1-20-of-100 subsequence already used for the freeze-then-audit tuning protocol (§4), so no new seed logic is introduced.
 
 **Consequence for the paper's framing.** Any table or figure reporting Ausset-CNF is annotated with "R=20" (vs. "R=100" for every other method), and its CIs are visibly wider as an honest consequence, not smoothed over. The Methods section documents the architectural cause (sequential-kernel-launch-bound CNF integration) as a limitation of the numerical-CNF baseline itself, which is, if anything, corroborating evidence for the paper's differentiator claim that FlowSurv-AFT's closed-form spline flow avoids exactly this per-evaluation solver cost.
+
+**Deviation 4 (2026-09-24): metric estimators corrected after supervisor review (ICI, calibration slope, Uno's C, IBS, D-calibration).**
+
+**What was pre-registered.** §3 lists ICI (Austin et al. 2020), calibration slope, Uno's C, IBS and D-calibration (Haider et al. 2020), with the observed outcome for ICI/slope defined as the event indicator at tau and Uno's C untruncated.
+
+**What was found.** Evaluating each metric on the *true* survival function (S1, n = 1000, 20 reps; an oracle should score ICI ~ 0, slope ~ 1) showed the implementations, not the models, were biased:
+
+| Censoring | ICI old | ICI new | Slope old | Slope new |
+|---|---|---|---|---|
+| 0% | 0.101 | 0.012 | 1.03 | 1.03 |
+| 50%, Type III | 0.182 | 0.023 | 0.39 | 1.00 |
+| 80%, Type III | 0.348 | 0.029 | 0.64 | 1.04 |
+
+Two causes: (i) statsmodels `lowess` was called with its default robust iterations (`it=3`), which down-weight the minority class of a 0/1 outcome; (ii) the observed indicator `1{t <= tau, d = 1}` counts subjects censored before tau as event-free, a bias that grows with censoring. Separately, Uno's C had no tau truncation with G clamped at 1e-7 (weights up to 1e14 for events near the end of follow-up) and used G(t) rather than G(t-); IBS used G(t) for the event term; and D-calibration split censored mass 1/(b+1) per bin instead of proportionally to where S falls (Haider et al. Algorithm 1).
+
+**Deviation.** (a) ICI uses plain loess (`it=0`) on Kaplan-Meier jackknife pseudo-observations of `1{T <= tau}`; (b) calibration slope uses an IPCW-weighted logistic regression; (c) Uno's C is truncated at tau (the same 90th percentile of observed test times used for IBS/ICI) and uses G(t-); IBS's event term uses G(t-); (d) D-calibration uses Haider's proportional censored mass. Hypotheses, contrasts, tau and the non-inferiority margins are unchanged. Regression tests: `tests/test_metrics_calibration.py`.
+
+**Why this is not post-hoc cherry-picking.** The fixes are estimator-correctness changes verified against the true survival function and against scikit-survival's truncated Uno estimator, apply identically to every method, and were made before any Phase 6 result that used them is analysed. They are not selected on any method's performance.
+
+**Consequence.** Every metrics row written before this change (all methods, pilot and Phase 6) carries the old ICI, calibration slope, Uno's C and IBS values and must be recomputed by refitting before analysis. Old D-calibration pass rates change little (oracle pass rates were unchanged in the check), but the chi-square statistic is stored and is the recommended summary under heavy censoring, where the oracle passes about 99-100% of the time under either version.
+
+**Deviation 5 (2026-09-24): FlowSurv-AFT training protocol aligned with the pre-registration; ablations and diagnostics added after supervisor review.**
+
+**What was pre-registered.** §4: spline domain [-4, 4]; L2 penalty 1e-5 on spline derivatives; a 24-point FlowSurv-AFT grid (K x bins x hidden x dropout); early stopping on validation NLL; simulation splits 70/15/15 identical across methods.
+
+**What was found (implementation vs. §4).**
+1. The FlowSurv wrapper ignored the validation split passed to `fit` and carved a further 15% out of the training data: FlowSurv trained on ~59.5% of n while DeepSurv/DeepHit/DSM trained on 70%, and at n = 200 it early-stopped on ~21 subjects. (Unfair to FlowSurv, and a fairness issue in either direction.)
+2. The wrapper's spline bound was 6.0, not 4.
+3. The L2 penalty on spline derivatives was not implemented.
+4. The tuning grid additionally included the number of encoder residual blocks `n_blocks` in {1, 2, 3}. The pre-registered 24-point grid is smaller than the 30-configuration budget, so a 30-configuration random search over it was not possible (the search degenerated to the exhaustive grid); with `n_blocks` (72 points) a 30-of-72 random search is meaningful, and Methodology §2.1 already specifies a 2-3 block encoder.
+5. Real-data times are in days (log t of about 7) while the identity warm start sits at mu = 0 (t = 1).
+
+**Deviation / fix.** (1) The protocol validation split is passed through and used for early stopping (no second carve-out). (2) Bound set to 4 as pre-registered. (3) The penalty is implemented (1e-5 on the squared raw interior-derivative parameters, mean over the batch; identity-flow ablations have none). (4) `n_blocks` in {1, 2, 3} is **kept in the grid and logged here** (applies identically to FlowSurv-Gauss and Ausset-CNF, which tune the same encoder blocks; DSM/DeepHit/DeepSurv use their own space). (5) A fixed offset on mu equal to the mean training log time centres the warm start on the data scale; this leaves densities, quantiles and time ratios exact. Also added, none of which touch a pre-registered hypothesis or contrast: quantile-specific time ratios, an AFT-ness diagnostic, a strict-AFT ablation (`flowsurv_strict_aft`, unconditional flow and scale) for H4, a FlowSurv-Gumbel diagnostic (`flowsurv_gumbel`), an exploratory cumulative-hazard companion to HRE (`hre_cum`), and an explicit `paired=` mode replacing a shape heuristic that was ambiguous when a grid had exactly as many points as test subjects.
+
+**Consequence.** All FlowSurv-AFT rows written before this change (the tuned S1 rows and the untuned pilot rows, which also carry the old metrics of Deviation 4) were produced under items 1-3 and 5 above and must not be mixed with post-change rows; they need to be regenerated before analysis. The new ablation methods are excluded from the default full-grid method list and run only when requested with `--methods`.
 
 ---
 

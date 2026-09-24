@@ -4,6 +4,9 @@ Three deliverables, each a standalone function operating on an already-fitted
 :class:`~flowsurv.models.flowsurv.FlowSurvAFT` (and, for time-ratio
 concordance, an already-fitted ``lifelines.WeibullAFTFitter``):
 
+0. :func:`quantile_time_ratio_table` / :func:`aft_ness_summary` -- quantile-
+   specific time ratios Q(q|a)/Q(q|b) (exact via the analytic inverse) and how
+   much they vary with q (the AFT-ness of mu(x) in a conditional flow).
 1. :func:`time_ratio_table` -- per-covariate, per-subject time ratios
    TR = exp(mu(x_a) - mu(x_b)) against the classical Weibull-AFT time ratio
    exp(beta_j * (x_a - x_b)); feeds ``eval.analyze.time_ratio_concordance``
@@ -138,6 +141,96 @@ def save_time_ratios(
 
 
 # ---------------------------------------------------------------------------
+# 1b. quantile-specific time ratios and the AFT-ness diagnostic
+# ---------------------------------------------------------------------------
+
+DEFAULT_QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
+
+
+def quantile_time_ratio_table(
+    flow_model: FlowSurvAFT,
+    x: Tensor,
+    covariate_names: list[str],
+    dataset: str,
+    quantiles: tuple[float, ...] = DEFAULT_QUANTILES,
+    active_covariates: list[str] | None = None,
+    reference: str = "mean",
+) -> pd.DataFrame:
+    """Quantile-specific time ratios TR_q(a, b) = Q(q|x_a) / Q(q|x_b).
+
+    Same contrast design as :func:`time_ratio_table` (subject profile vs the
+    profile with covariate j set to a reference value), but evaluated on the
+    exact analytic quantile function. Because the residual law of a
+    conditional flow can depend on x, exp(mu(a) - mu(b)) is a time ratio only
+    if TR_q does not vary with q; this reports TR_q itself, which is always
+    exact (it uses the analytic inverse, differentiator 1).
+
+    Long format: ``dataset, covariate, subject, q, tr_q``.
+    """
+    x = torch.as_tensor(x, dtype=torch.float32)
+    if x.shape[1] != len(covariate_names):
+        raise ValueError(f"x has {x.shape[1]} columns but {len(covariate_names)} names given")
+    if reference == "mean":
+        x_ref = x.mean(dim=0)
+    elif reference == "median":
+        x_ref = x.median(dim=0).values
+    else:
+        raise ValueError(f"unknown reference {reference!r}; use 'mean' or 'median'")
+    active = active_covariates or list(covariate_names)
+    unknown = [c for c in active if c not in covariate_names]
+    if unknown:
+        raise ValueError(f"unknown covariates {unknown}; known: {covariate_names}")
+
+    flow_model.eval()
+    q = torch.as_tensor(quantiles, dtype=torch.float32)
+    rows: list[pd.DataFrame] = []
+    with torch.no_grad():
+        q_a = flow_model.quantiles(q, x)  # (Q, n)
+        for cov in active:
+            j = covariate_names.index(cov)
+            x_b = x.clone()
+            x_b[:, j] = x_ref[j]
+            tr = (q_a / flow_model.quantiles(q, x_b)).cpu().numpy()  # (Q, n)
+            n = x.shape[0]
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "dataset": dataset,
+                        "covariate": cov,
+                        "subject": np.tile(np.arange(n), len(quantiles)),
+                        "q": np.repeat(np.asarray(quantiles, dtype=float), n),
+                        "tr_q": tr.reshape(-1),
+                    }
+                )
+            )
+    return pd.concat(rows, ignore_index=True)
+
+
+def aft_ness_summary(tr_table: pd.DataFrame) -> pd.DataFrame:
+    """AFT-ness diagnostic: how much TR_q varies across q.
+
+    Per subject and covariate, ``spread = max_q log TR_q - min_q log TR_q``.
+    Under a strict AFT (residual law independent of x) the spread is 0, so
+    exp(mu(a) - mu(b)) is one time ratio for the whole distribution; the
+    larger the spread, the less the AFT reading of mu(x) applies. Expected
+    pattern: ~0 on S1/S5, clearly positive on S3. Returns one row per
+    (dataset, covariate): mean/median/90th-percentile spread.
+    """
+    d = tr_table.assign(log_tr=np.log(tr_table["tr_q"].clip(lower=1e-300)))
+    spread = (
+        d.groupby(["dataset", "covariate", "subject"])["log_tr"]
+        .agg(lambda v: float(v.max() - v.min()))
+        .rename("spread")
+        .reset_index()
+    )
+    return (
+        spread.groupby(["dataset", "covariate"])["spread"]
+        .agg(spread_mean="mean", spread_median="median", spread_p90=lambda v: float(np.quantile(v, 0.9)))
+        .reset_index()
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. PDP / ICE of mu(x) (Methodology Sec. 5, item 2)
 # ---------------------------------------------------------------------------
 
@@ -233,9 +326,9 @@ def case_study_curves(
     flow_model.eval()
     with torch.no_grad():
         # grid case: t (m,), x (n, p) -> (m, n)
-        density = flow_model.density(t_grid, x_subjects).cpu().numpy()
-        survival = flow_model.survival(t_grid, x_subjects).cpu().numpy()
-        hazard = flow_model.hazard(t_grid, x_subjects).cpu().numpy()
+        density = flow_model.density(t_grid, x_subjects, paired=False).cpu().numpy()
+        survival = flow_model.survival(t_grid, x_subjects, paired=False).cpu().numpy()
+        hazard = flow_model.hazard(t_grid, x_subjects, paired=False).cpu().numpy()
 
     t_np = t_grid.cpu().numpy()
     rows = []

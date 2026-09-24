@@ -5,6 +5,7 @@ from .cnf_flow import ConditionalCNFFlow
 from .encoder import FlowSurvEncoder, ResidualBlock
 from .flowsurv import FlowSurvAFT
 from .flowsurv_gauss import FlowSurvGauss
+from .flowsurv_gumbel import FlowSurvGumbel
 from .losses import (
     interval_censored_nll,
     nelson_aalen,
@@ -22,6 +23,7 @@ __all__ = [
     "FlowSurvAFT",
     "FlowSurvEncoder",
     "FlowSurvGauss",
+    "FlowSurvGumbel",
     "ResidualBlock",
     "TrainConfig",
     "TrainResult",

@@ -29,6 +29,7 @@ class TrainConfig:
     grad_clip: float = 1.0
     val_frac: float = 0.15
     lambda_softna: float = 0.0
+    spline_l2: float = 0.0  # L2 penalty on spline derivative parameters (prereg Sec. 4: 1e-5)
     seed: int = 0
     device: str = "cpu"
     verbose: bool = False
@@ -44,17 +45,35 @@ class TrainResult:
     wall_time_s: float = 0.0
 
 
-def fit(model, t: Tensor, d: Tensor, x: Tensor, config: TrainConfig | None = None) -> TrainResult:
-    """Fit ``model`` by right-censored maximum likelihood; returns history."""
+def fit(
+    model,
+    t: Tensor,
+    d: Tensor,
+    x: Tensor,
+    config: TrainConfig | None = None,
+    val: tuple[Tensor, Tensor, Tensor] | None = None,
+) -> TrainResult:
+    """Fit ``model`` by right-censored maximum likelihood; returns history.
+
+    Early stopping uses ``val`` = (t, d, x) when given, so all of ``t/d/x``
+    is training data (the split is then owned by the caller, as for every
+    other method). Without ``val`` a ``cfg.val_frac`` share of the training
+    data is carved out internally.
+    """
     cfg = config or TrainConfig()
     device = torch.device(cfg.device)
     model.to(device)
     t, d, x = t.to(device).float(), d.to(device).float(), x.to(device).float()
 
     gen = torch.Generator(device="cpu").manual_seed(cfg.seed)
-    perm = torch.randperm(t.shape[0], generator=gen)
-    n_val = max(1, int(round(cfg.val_frac * t.shape[0])))
-    idx_val, idx_tr = perm[:n_val].to(device), perm[n_val:].to(device)
+    if val is not None:
+        t_val, d_val, x_val = (torch.as_tensor(v).to(device).float() for v in val)
+        idx_tr = torch.arange(t.shape[0], device=device)
+    else:
+        perm = torch.randperm(t.shape[0], generator=gen)
+        n_val = max(1, int(round(cfg.val_frac * t.shape[0])))
+        idx_val, idx_tr = perm[:n_val].to(device), perm[n_val:].to(device)
+        t_val, d_val, x_val = t[idx_val], d[idx_val], x[idx_val]
 
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -77,6 +96,8 @@ def fit(model, t: Tensor, d: Tensor, x: Tensor, config: TrainConfig | None = Non
                 loss = total_nll(model, t[batch], d[batch], x[batch], cfg.lambda_softna)
             else:
                 loss = right_censored_nll(model, t[batch], d[batch], x[batch])
+            if cfg.spline_l2 > 0 and hasattr(model, "spline_derivative_penalty"):
+                loss = loss + cfg.spline_l2 * model.spline_derivative_penalty(x[batch])
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
@@ -87,7 +108,7 @@ def fit(model, t: Tensor, d: Tensor, x: Tensor, config: TrainConfig | None = Non
 
         model.eval()
         with torch.no_grad():
-            val_nll = right_censored_nll(model, t[idx_val], d[idx_val], x[idx_val]).item()
+            val_nll = right_censored_nll(model, t_val, d_val, x_val).item()
 
         result.train_nll.append(epoch_nll / n_seen)
         result.val_nll.append(val_nll)

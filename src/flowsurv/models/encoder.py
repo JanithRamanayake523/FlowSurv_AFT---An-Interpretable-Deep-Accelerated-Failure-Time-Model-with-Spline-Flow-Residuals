@@ -39,6 +39,21 @@ class ResidualBlock(nn.Module):
         return x + self.drop(self.fc2(self.act(self.fc1(self.norm(x)))))
 
 
+class _GlobalParams(nn.Module):
+    """Covariate-free, zero-initialized parameter vector broadcast to the batch.
+
+    Used for the strict-AFT ablation: the spline parameters are learned but do
+    not depend on x, so the residual law of eps is the same for every subject.
+    """
+
+    def __init__(self, n_params: int) -> None:
+        super().__init__()
+        self.p = nn.Parameter(torch.zeros(n_params))
+
+    def forward(self, h: Tensor) -> Tensor:
+        return self.p.expand(h.shape[0], -1)
+
+
 def _zero_linear(in_features: int, out_features: int) -> nn.Linear:
     """Linear layer with zero weight and bias (identity/warm-start init)."""
     layer = nn.Linear(in_features, out_features)
@@ -56,6 +71,16 @@ class FlowSurvEncoder(nn.Module):
         n_blocks: number of residual blocks; 0 selects the linear encoder.
         dropout: dropout rate inside residual blocks.
         flow: the conditional RQS flow the spline head parameterizes.
+        conditional_flow: if False (strict-AFT ablation) the spline parameters
+            AND the scale sigma are covariate-free global parameters, so the
+            residual law sigma * eps is the same for every x and
+            exp(mu(a) - mu(b)) is exactly a time ratio at every quantile.
+
+    ``mu_offset`` is a fixed (non-trained) buffer added to mu: the wrapper sets
+    it to the mean log observed time so the identity warm start is centred on
+    the data scale (mu = 0 means t = 1, which is far from real-data times in
+    days). A constant offset leaves densities, quantiles and time ratios exact
+    in real time; it only moves the starting point.
     """
 
     def __init__(
@@ -65,9 +90,12 @@ class FlowSurvEncoder(nn.Module):
         n_blocks: int = 2,
         dropout: float = 0.1,
         flow: ConditionalRQSFlow | None = None,
+        conditional_flow: bool = True,
     ) -> None:
         super().__init__()
         self.flow = flow if flow is not None else ConditionalRQSFlow()
+        self.conditional_flow = conditional_flow
+        self.register_buffer("mu_offset", torch.zeros(()))
 
         if n_blocks > 0:
             trunk = [nn.Linear(n_features, hidden)]
@@ -80,13 +108,16 @@ class FlowSurvEncoder(nn.Module):
         self.trunk = nn.Sequential(*trunk)
 
         self.mu_head = _zero_linear(out_dim, 1)
-        self.sigma_head = _zero_linear(out_dim, 1)
-        self.spline_head = _zero_linear(out_dim, self.flow.n_params)
+        self.sigma_head = _zero_linear(out_dim, 1) if conditional_flow else _GlobalParams(1)
+        if conditional_flow:
+            self.spline_head = _zero_linear(out_dim, self.flow.n_params)
+        else:
+            self.spline_head = _GlobalParams(self.flow.n_params)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Return ``(mu, sigma, spline_params)``, each row one observation."""
         h = self.trunk(x)
-        mu = self.mu_head(h).squeeze(-1)
+        mu = self.mu_head(h).squeeze(-1) + self.mu_offset
         sigma = nn.functional.softplus(self.sigma_head(h).squeeze(-1))
         params = self.spline_head(h)
         return mu, sigma, params

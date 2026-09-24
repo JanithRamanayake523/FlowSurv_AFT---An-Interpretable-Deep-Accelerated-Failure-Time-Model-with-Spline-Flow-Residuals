@@ -7,12 +7,19 @@ from .classical import CoxPH, LogNormalAFT, RandomSurvivalForest, WeibullAFT
 from .common import SurvivalMethod
 from .deep import DeepHit, DeepSurv
 from .dsm import DSM
-from .flowsurv_wrappers import FlowSurvAFTMethod, FlowSurvGaussMethod
+from .flowsurv_wrappers import (
+    FlowSurvAFTMethod,
+    FlowSurvGaussMethod,
+    FlowSurvGumbelMethod,
+    FlowSurvStrictAFTMethod,
+)
 from .royston_parmar import RoystonParmar
 
 METHODS: dict[str, type[SurvivalMethod]] = {
     "flowsurv_aft": FlowSurvAFTMethod,
     "flowsurv_gauss": FlowSurvGaussMethod,
+    "flowsurv_strict_aft": FlowSurvStrictAFTMethod,
+    "flowsurv_gumbel": FlowSurvGumbelMethod,
     "cox_ph": CoxPH,
     "weibull_aft": WeibullAFT,
     "log_normal_aft": LogNormalAFT,
@@ -24,7 +31,12 @@ METHODS: dict[str, type[SurvivalMethod]] = {
     "ausset_cnf": AussetCNF,
 }
 
+#: Diagnostic/ablation methods: registered (runnable via ``--methods``) but
+#: excluded from the default full-grid method list.
+ABLATION_METHODS: frozenset[str] = frozenset({"flowsurv_strict_aft", "flowsurv_gumbel"})
+
 __all__ = [
+    "ABLATION_METHODS",
     "METHODS",
     "AussetCNF",
     "CoxPH",
@@ -33,6 +45,8 @@ __all__ = [
     "DeepSurv",
     "FlowSurvAFTMethod",
     "FlowSurvGaussMethod",
+    "FlowSurvGumbelMethod",
+    "FlowSurvStrictAFTMethod",
     "LogNormalAFT",
     "RandomSurvivalForest",
     "RoystonParmar",

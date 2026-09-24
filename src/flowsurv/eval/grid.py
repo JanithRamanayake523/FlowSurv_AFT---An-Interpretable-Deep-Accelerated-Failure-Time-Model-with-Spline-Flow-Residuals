@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..baselines import METHODS
+from ..baselines import ABLATION_METHODS, METHODS
 from ..data import REAL_DATASETS, default_grid
 from .run_cell import run_real_rep, run_sim_rep
 from .tune import FrozenTuner
@@ -127,7 +127,7 @@ def run_grid(
 
     - ``cells``: ``CellConfig`` list; default :func:`default_grid`. Sharded by
       cell index so a cell's reps stay together.
-    - ``methods``: method names; default all of ``METHODS``.
+    - ``methods``: method names; default all of ``METHODS`` except the ablation/diagnostic ones (``ABLATION_METHODS``).
     - ``audit``: pass ``audit=True`` to the FrozenTuner (per-rep nested tuning;
       use only on the audit subset from ``audit_cells``).
     - Real datasets (reps 1-10, prereg Sec. 4.2) are included unless
@@ -143,7 +143,7 @@ def run_grid(
     """
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    methods = list(methods) if methods else list(METHODS)
+    methods = list(methods) if methods else [m for m in METHODS if m not in ABLATION_METHODS]
     unknown = [m for m in methods if m not in METHODS]
     if unknown:
         raise ValueError(f"unknown methods {unknown}; known: {list(METHODS)}")
