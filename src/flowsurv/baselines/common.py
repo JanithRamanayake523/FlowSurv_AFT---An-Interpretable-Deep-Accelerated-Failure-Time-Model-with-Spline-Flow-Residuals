@@ -98,7 +98,8 @@ def interp_surv(
         times_src: (m_src,) ascending source time grid, shared by all subjects
             (as returned by lifelines/pycox predictions).
         surv_src: (m_src, n) survival values on ``times_src``.
-        t_query: (m,) ascending query times.
+        t_query: (m,) query times, in any order (interpolated in sorted order
+            internally; the result keeps the caller's order).
 
     Returns:
         (m, n) float64 array: linear interpolation, constant extrapolation at
@@ -121,6 +122,14 @@ def interp_surv(
     if np.any(np.diff(ts) <= 0):
         raise ValueError("times_src must be strictly increasing")
 
+    # The monotone (cumulative-min) step below is only meaningful along
+    # ascending time. Callers such as the D-calibration input and the tuner's
+    # validation NLL pass each subject's own observed time (arbitrary order),
+    # where a running minimum in that order silently flattened every curve --
+    # so interpolate in sorted order and scatter back to the caller's order.
+    order = np.argsort(tq, kind="stable")
+    tq = tq[order]
+
     lo = np.clip(np.searchsorted(ts, tq, side="right") - 1, 0, ts.size - 2)
     hi = lo + 1
     span = np.maximum(ts[hi] - ts[lo], np.finfo(np.float64).tiny)
@@ -130,7 +139,10 @@ def interp_surv(
     out[tq <= ts[0]] = s[0]
     out[tq >= ts[-1]] = s[-1]
     out = np.minimum.accumulate(out, axis=0)
-    return np.clip(out, 0.0, 1.0)
+    out = np.clip(out, 0.0, 1.0)
+    result = np.empty_like(out)
+    result[order] = out
+    return result
 
 
 def hazard_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:
@@ -159,6 +171,12 @@ def density_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:
     Computed directly by finite-differencing ``surv`` so that division by
     near-zero survival values does not explode. The result is clipped to be
     non-negative.
+
+    ``t_grid`` need not be sorted or distinct: callers such as the tuner's
+    validation NLL pass subjects' own observed times (arbitrary order, ties
+    from censoring). Differencing across that raw order gave gradients between
+    unrelated times (mostly clipped to exactly 0), so we difference on the
+    sorted unique times and scatter the result back to the input order.
     """
     tg = np.asarray(t_grid, dtype=np.float64).ravel()
     s = np.asarray(surv, dtype=np.float64)
@@ -166,8 +184,15 @@ def density_from_survival(t_grid: np.ndarray, surv: np.ndarray) -> np.ndarray:
         raise ValueError("surv must have one row per grid time")
     if tg.size <= 1:
         return np.zeros_like(s)
-    ds = np.gradient(s, tg, axis=0, edge_order=1)
-    return np.clip(-ds, 0.0, None)
+    order = np.argsort(tg, kind="stable")
+    uniq, first_idx, inverse = np.unique(tg[order], return_index=True, return_inverse=True)
+    if uniq.size <= 1:
+        return np.zeros_like(s)
+    ds = np.gradient(s[order][first_idx], uniq, axis=0, edge_order=1)
+    dens_sorted = np.clip(-ds, 0.0, None)[inverse]
+    out = np.empty_like(dens_sorted)
+    out[order] = dens_sorted
+    return out
 
 
 def as_output(arr: np.ndarray) -> Tensor:

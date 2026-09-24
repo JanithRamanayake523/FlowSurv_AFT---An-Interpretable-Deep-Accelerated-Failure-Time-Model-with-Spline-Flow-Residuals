@@ -10,7 +10,11 @@ All baselines return float32 CPU tensors at the interface boundary.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 import time
+import uuid
 import warnings
 from typing import Any
 
@@ -45,6 +49,28 @@ class _PycoxMLP(nn.Module):
         return self.net(x)
 
 
+@contextlib.contextmanager
+def _weights_only_torch_load():
+    """Load torchtuples' early-stopping checkpoint with ``weights_only=True``.
+
+    torchtuples reloads the best weights with a bare ``torch.load`` (a
+    FutureWarning: the default flips to weights_only=True). The file is a plain
+    tensor ``state_dict``, so the safe mode loads it fine -- this makes it what
+    the warning asks for instead of silencing it.
+    """
+    original = torch.load
+
+    def patched(*args, **kwargs):
+        kwargs.setdefault("weights_only", True)
+        return original(*args, **kwargs)
+
+    torch.load = patched
+    try:
+        yield
+    finally:
+        torch.load = original
+
+
 def _pycox_fit(
     model,
     x_train: np.ndarray,
@@ -74,30 +100,41 @@ def _pycox_fit(
     model.set_device(device)
 
     callbacks = None
+    ckpt_path = None
     if x_val is not None and y_val is not None:
         val_data = (x_val, y_val)
-        early_stop = tt.callbacks.EarlyStopping(patience=patience)
+        # Checkpoint in the temp dir, not the cwd: an interrupted run otherwise
+        # leaves weight_checkpoint_*.pt files wherever it was launched from.
+        ckpt_path = os.path.join(tempfile.gettempdir(), f"weight_checkpoint_{uuid.uuid4().hex}.pt")
+        early_stop = tt.callbacks.EarlyStopping(patience=patience, file_path=ckpt_path)
         callbacks = [early_stop]
     else:
         val_data = None
 
     start = time.perf_counter()
     try:
-        log = model.fit(
-            x_train,
-            y_train,
-            batch_size=batch_size,
-            epochs=epochs,
-            callbacks=callbacks,
-            verbose=verbose,
-            val_data=val_data,
-        )
+        with _weights_only_torch_load():
+            log = model.fit(
+                x_train,
+                y_train,
+                batch_size=batch_size,
+                epochs=epochs,
+                callbacks=callbacks,
+                verbose=verbose,
+                val_data=val_data,
+            )
         converged = True
         info: dict = {"epochs": len(log.epochs)}
+        if val_data is not None:
+            # Best validation loss = the loss of the weights EarlyStopping restores.
+            info["val_loss"] = float(log.to_pandas()["val_loss"].min())
     except Exception as e:
         converged = False
         info = {"error": repr(e)}
         warnings.warn(f"pycox fit failed: {e!r}")
+    finally:
+        if ckpt_path is not None and os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
     wall_time_s = time.perf_counter() - start
     info["wall_time_s"] = wall_time_s
     return converged, info, model
@@ -310,6 +347,13 @@ class DeepHit(SurvivalMethod):
             device=hyper.get("device", "cpu"),
             verbose=hyper.get("verbose", False),
         )
+        # Not exposed as "val_loss": DeepHit's loss mixes an NLL and a ranking
+        # term weighted by alpha/sigma/num_durations, which are themselves in the
+        # tuning space, so it is not comparable across configs (it would simply
+        # favor the smallest alpha). The tuner scores DeepHit by the exact
+        # censored validation NLL of its interpolated survival curve instead.
+        if "val_loss" in info:
+            info["package_val_loss"] = info.pop("val_loss")
         if converged:
             self.interpolator = self.model.interpolate(sub=10, scheme="const_pdf")
         return FitResult(wall_time_s=info.get("wall_time_s", time.perf_counter()), converged=converged, info=info)
