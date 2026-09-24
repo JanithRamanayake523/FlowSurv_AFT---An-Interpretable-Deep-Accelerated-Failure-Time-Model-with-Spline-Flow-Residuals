@@ -1,10 +1,10 @@
 """Default-penalizer regression test for the lifelines-backed baselines.
 
-Deviation 2 (prereg Sec. 8): Cox-PH / Weibull-AFT / log-normal AFT now fit
-with a fixed nonzero default penalizer instead of unregularized MLE, since
-the Phase 5 pilot showed the unregularized fit diverging at small n / low
-censoring. This test only checks the default is actually wired through to
-lifelines and can still be overridden by the tuner-style ``penalizer`` kwarg.
+Deviation 2 (prereg Sec. 8, with its 2026-09-24 correction): Cox-PH /
+Weibull-AFT / log-normal AFT fit with a fixed nonzero default penalizer (a
+mild ridge that lowers small-n HRE; unregularized fits do not actually fail).
+This test only checks the default is actually wired through to lifelines and
+can still be overridden by the tuner-style ``penalizer`` kwarg.
 """
 
 from __future__ import annotations

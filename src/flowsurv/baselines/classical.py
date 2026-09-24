@@ -133,8 +133,9 @@ class CoxPH(_LifelinesMethod):
     def _fit_estimator(self, df: pd.DataFrame, **hyper) -> Any:
         from lifelines import CoxPHFitter
 
-        # Default penalizer is nonzero (Deviation 2, prereg Sec. 8): unregularized
-        # MLE diverges at small n / low censoring, not tuned per cell.
+        # Fixed nonzero default (Deviation 2 and its 2026-09-24 correction, prereg
+        # Sec. 8): a mild ridge that lowers small-n HRE; unregularized fits do
+        # not actually fail. Never tuned per cell.
         penalizer = hyper.get("penalizer", _DEFAULT_PENALIZER)
         model = CoxPHFitter(penalizer=penalizer)
         model.fit(df, duration_col=self._duration_col, event_col=self._event_col)
