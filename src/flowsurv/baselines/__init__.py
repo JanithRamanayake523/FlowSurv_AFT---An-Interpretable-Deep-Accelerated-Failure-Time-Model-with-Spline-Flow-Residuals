@@ -1,33 +1,14 @@
-"""Baselines: classical (Cox/AFT/RSF/Royston-Parmar) and deep (DeepSurv/DeepHit/DSM) (Phase 3)."""
+"""Baselines: classical (Cox/AFT/RSF/Royston-Parmar), deep (DeepSurv/DeepHit/DSM) and FlowSurv."""
 
 from __future__ import annotations
 
+from .ausset_cnf import AussetCNF
 from .classical import CoxPH, LogNormalAFT, RandomSurvivalForest, WeibullAFT
+from .common import SurvivalMethod
 from .deep import DeepHit, DeepSurv
 from .dsm import DSM
 from .flowsurv_wrappers import FlowSurvAFTMethod, FlowSurvGaussMethod
-
-#: Royston-Parmar and Ausset-CNF are optional (external R/ODE dependencies).
-#: Import them where available; otherwise provide a no-op placeholder so the
-#: registry remains stable.
-try:
-    from .royston_parmar import RoystonParmar
-except Exception:  # pragma: no cover
-    from .common import SurvivalMethod
-    from .stubs import _UnavailableMethod
-
-    class RoystonParmar(_UnavailableMethod):  # type: ignore[no-redef]
-        name: str = "royston_parmar"
-
-
-try:
-    from .ausset_cnf import AussetCNF
-except Exception:  # pragma: no cover
-    from .stubs import _UnavailableMethod
-
-    class AussetCNF(_UnavailableMethod):  # type: ignore[no-redef]
-        name: str = "ausset_cnf"
-
+from .royston_parmar import RoystonParmar
 
 METHODS: dict[str, type[SurvivalMethod]] = {
     "flowsurv_aft": FlowSurvAFTMethod,
