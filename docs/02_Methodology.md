@@ -175,7 +175,7 @@ Unit tests that must pass before any experiment runs:
 3. **Inverse audit:** ‖g⁻¹(g(u)) − u‖∞ < 1e-6 on the spline domain.
 4. **Censoring likelihood audit:** on data with δ = 0 everywhere, gradient equals the score of S only (finite-difference check).
 5. **Quantile/sampling audit:** KS test between 10⁵ one-pass samples and the analytic CDF — p > 0.01.
-6. **Calibration sanity:** on large uncensored S1 samples, D-calibration passes.
+6. **Calibration sanity:** on large uncensored S1 samples, D-calibration passes. (The gate is a single χ² test on one fitted model, run at α = 0.01 so that a correct fit is not rejected by chance or by floating-point summation order; the reported D-calibration pass rate across replications still uses α = 0.05.)
 
 ---
 
