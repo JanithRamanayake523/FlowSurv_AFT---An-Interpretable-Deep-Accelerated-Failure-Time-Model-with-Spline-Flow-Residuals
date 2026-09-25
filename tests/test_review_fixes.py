@@ -251,3 +251,55 @@ def test_deephit_risk_is_not_constant_when_times_are_in_days():
     assert res.converged
     risk = torch.as_tensor(m.predict_risk(x)).numpy()
     assert len(np.unique(risk)) > 10
+
+
+# ---------------- validation folds with no events: explicit failure, and the tuner survives them
+def _split_with_event_free_val(n=300):
+    t, d, x = _data(n)
+    tr, va = slice(0, 210), slice(210, n)
+    return (t[tr], d[tr], x[tr]), (t[va], torch.zeros_like(d[va]), x[va])
+
+
+def test_deepsurv_and_deephit_report_failure_when_val_fold_has_no_events():
+    from flowsurv.baselines import DeepHit, DeepSurv
+
+    train, val = _split_with_event_free_val()
+    for cls in (DeepSurv, DeepHit):
+        res = cls().fit(*train, val=val, seed=0, max_epochs=3, hidden=16, n_blocks=1)
+        assert not res.converged
+        assert "no events" in res.info["error"]
+
+
+def test_tuner_survives_a_fold_without_validation_events():
+    from flowsurv.eval.tune import tune_method
+
+    (t, d, x), (tv, dv, xv) = _split_with_event_free_val()
+    good_t, good_d, good_x = _data(300, seed=5)
+    datasets = [
+        {"train": {"t": t, "d": d, "x": x}, "val": {"t": good_t[210:], "d": good_d[210:], "x": good_x[210:]}},
+        {"train": {"t": t, "d": d, "x": x}, "val": {"t": tv, "d": dv, "x": xv}},  # no events
+    ]
+    best, log = tune_method("deepsurv", datasets, n_configs=2)
+    assert best  # a config was chosen from the good fold
+    assert not log["converged_all"].any()  # the bad fold is flagged, not fatal
+    assert np.isfinite(log["mean_val_score"]).all()
+
+
+def test_failed_fit_row_keeps_the_real_reason(monkeypatch):
+    from flowsurv.data import default_grid
+    from flowsurv.data.cells import cell_seed, generate_dataset, split_train_val_test
+    from flowsurv.eval import run_cell
+
+    cell = next(c for c in default_grid() if c.cell_id == "S1_n200_c80_typeI")
+    # force an event-free validation fold through the public path
+    real_split = run_cell.split_train_val_test
+
+    def event_free_val(t, d, x, seed):
+        sp = real_split(t, d, x, seed=seed)
+        sp["val"]["d"] = torch.zeros_like(sp["val"]["d"])
+        return sp
+
+    monkeypatch.setattr(run_cell, "split_train_val_test", event_free_val)
+    row = run_cell.run_sim_rep(cell, 1, "deepsurv")
+    assert row["converged"] is False
+    assert "no events" in row["error"]

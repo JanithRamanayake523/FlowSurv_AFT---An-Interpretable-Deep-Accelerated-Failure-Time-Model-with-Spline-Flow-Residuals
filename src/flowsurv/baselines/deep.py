@@ -27,6 +27,23 @@ from torch import Tensor
 from .common import FitResult, SurvivalMethod, as_output, density_from_survival, hazard_from_survival, interp_surv, to_numpy
 
 
+_NO_VAL_EVENTS = "validation fold has no events; early stopping on a partial-likelihood/ranking loss is undefined"
+
+
+def _val_has_no_events(val) -> bool:
+    """True when a supplied validation fold contains no observed event.
+
+    Cox partial likelihood (DeepSurv) is 0/0 = NaN with no events, so early stopping never
+    sees an improvement and silently keeps near-untrained weights (Uno's C ~ 0.5, reported as
+    converged); DeepHit's discretizer crashes on an empty event set. Either way the fit is
+    not meaningful, so it is reported as a failure instead.
+    """
+    if val is None:
+        return False
+    d_v = torch.as_tensor(val[1])
+    return float(d_v.sum()) == 0.0
+
+
 class _PycoxMLP(nn.Module):
     """Simple MLP used by DeepSurv and DeepHit."""
 
@@ -201,6 +218,8 @@ class DeepSurv(SurvivalMethod):
         except ImportError as e:  # pragma: no cover
             return FitResult(wall_time_s=0.0, converged=False, info={"error": f"pycox not installed: {e}"})
 
+        if _val_has_no_events(val):
+            return FitResult(wall_time_s=0.0, converged=False, info={"error": _NO_VAL_EVENTS})
         t_np, d_np, x_np = to_numpy(t, d, x)
         x_np = x_np.astype(np.float32)
         t_np = t_np.astype(np.float32)
@@ -317,6 +336,8 @@ class DeepHit(SurvivalMethod):
         except ImportError as e:  # pragma: no cover
             return FitResult(wall_time_s=0.0, converged=False, info={"error": f"pycox not installed: {e}"})
 
+        if _val_has_no_events(val):
+            return FitResult(wall_time_s=0.0, converged=False, info={"error": _NO_VAL_EVENTS})
         t_np, d_np, x_np = to_numpy(t, d, x)
         x_np = x_np.astype(np.float32)
         t_np = t_np.astype(np.float32)

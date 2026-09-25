@@ -171,15 +171,28 @@ def tune_method(
         scores, converged_all = [], True
         for rep_offset, ds in enumerate(datasets):
             method = cls()
-            fit_result = method.fit(
-                ds["train"]["t"],
-                ds["train"]["d"],
-                ds["train"]["x"],
-                val=(ds["val"]["t"], ds["val"]["d"], ds["val"]["x"]),
-                seed=seed + rep_offset,
-                **cfg,
-            )
+            # A fold whose fit fails (e.g. a validation fold with no events under heavy
+            # censoring) must not abort the whole macro-cell: it is scored NaN, ignored in the
+            # mean over folds, and flagged through ``converged_all``.
+            try:
+                fit_result = method.fit(
+                    ds["train"]["t"],
+                    ds["train"]["d"],
+                    ds["train"]["x"],
+                    val=(ds["val"]["t"], ds["val"]["d"], ds["val"]["x"]),
+                    seed=seed + rep_offset,
+                    **cfg,
+                )
+            except Exception as e:  # noqa: BLE001 -- failures are data
+                if verbose:
+                    print(f"[tune] {method_name} {cell_id} config {config_id + 1} fold {rep_offset}: fit raised {e!r}", flush=True)
+                converged_all = False
+                scores.append(math.nan)
+                continue
             converged_all = converged_all and bool(fit_result.converged)
+            if not fit_result.converged:
+                scores.append(math.nan)
+                continue
             scores.append(config_score(method_name, method, fit_result, ds["val"]))
         row = {
             "config_id": config_id,

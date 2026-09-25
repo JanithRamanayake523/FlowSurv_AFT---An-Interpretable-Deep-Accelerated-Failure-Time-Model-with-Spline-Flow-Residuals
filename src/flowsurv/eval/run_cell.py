@@ -213,6 +213,7 @@ def run_sim_rep(
     ``error=repr(e)`` with NaN metrics.
     """
     row = _empty_row(cell.cell_id, cell.scenario, cell.n, cell.censoring, cell.censoring_type, rep, method_name)
+    fit_error = ""  # the fit's own failure reason, kept in preference to a later "not fit" error
     try:
         data = generate_dataset(cell, rep)
         seed = cell_seed(cell.cell_id, rep)  # common seeds across methods (prereg Sec. 4)
@@ -229,13 +230,14 @@ def run_sim_rep(
             **config,
         )
         row["converged"] = bool(fit_result.converged)
+        fit_error = str((fit_result.info or {}).get("error", "")) if not fit_result.converged else ""
         capture: dict | None = {} if predictions_dir else None
         _evaluate(method, fit_result, splits["test"], data.get("truth"), row, capture)
         if capture:
             save_predictions(predictions_dir, cell.cell_id, rep, method_name, capture)
     except Exception as e:  # noqa: BLE001 -- failures are data (prereg Sec. 5)
         row["converged"] = False
-        row["error"] = repr(e)
+        row["error"] = fit_error or repr(e)
     return row
 
 
@@ -258,6 +260,7 @@ def run_real_rep(
     n = int(len(t))
     censoring = float(1.0 - torch.as_tensor(d, dtype=torch.float32).mean())
     row = _empty_row(f"{dataset_name}_real", dataset_name, n, censoring, "real", rep, method_name)
+    fit_error = ""
     try:
         splits = real_split(t, d, x, rep)
         train2, val = inner_val_split(splits["train"], val_frac=0.15, seed=rep)
@@ -274,13 +277,14 @@ def run_real_rep(
             **config,
         )
         row["converged"] = bool(fit_result.converged)
+        fit_error = str((fit_result.info or {}).get("error", "")) if not fit_result.converged else ""
         capture = {} if predictions_dir else None
         _evaluate(method, fit_result, splits["test"], None, row, capture)
         if capture:
             save_predictions(predictions_dir, row["cell_id"], rep, method_name, capture)
     except Exception as e:  # noqa: BLE001
         row["converged"] = False
-        row["error"] = repr(e)
+        row["error"] = fit_error or repr(e)
     return row
 
 
