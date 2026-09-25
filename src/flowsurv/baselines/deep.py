@@ -147,6 +147,27 @@ def _df_to_surv(surv_df: pd.DataFrame, t_query: np.ndarray) -> np.ndarray:
     return interp_surv(times, surv, t_query)
 
 
+def _median_from_curves(times: np.ndarray, surv: np.ndarray) -> np.ndarray:
+    """Median survival time per column of a survival-curve matrix ``surv`` (m, n) on ``times`` (m,).
+
+    Linear interpolation of S between the two time points bracketing 0.5. A subject whose
+    curve never falls to 0.5 within the model's time range has its median beyond the last
+    cut; it is placed at ``t_last * (1 + (S_last - 0.5))``, which keeps such subjects ordered
+    by S_last (higher survival = longer median) instead of tying them all.
+    """
+    reached = surv <= 0.5
+    has = reached.any(axis=0)
+    k = reached.argmax(axis=0)  # first index with S <= 0.5 (0 if never; masked below)
+    cols = np.arange(surv.shape[1])
+    k_prev = np.clip(k - 1, 0, None)
+    s0, s1 = surv[k_prev, cols], surv[k, cols]
+    t0, t1 = times[k_prev], times[k]
+    frac = np.where(s0 > s1, (s0 - 0.5) / np.where(s0 > s1, s0 - s1, 1.0), 0.0)
+    interp = np.where(k == 0, times[0], t0 + np.clip(frac, 0.0, 1.0) * (t1 - t0))
+    beyond = times[-1] * (1.0 + (surv[-1] - 0.5))
+    return np.where(has, interp, beyond)
+
+
 class DeepSurv(SurvivalMethod):
     """DeepSurv (pycox.models.CoxPH) — Cox proportional hazards with an MLP risk function."""
 
@@ -381,18 +402,12 @@ class DeepHit(SurvivalMethod):
     def predict_risk(self, x: Tensor) -> Tensor:
         if self.model is None:
             raise RuntimeError("DeepHit has not been fit")
-        # Risk score: negative median survival time approximated on a fine grid
+        # Risk score: negative median survival time read off the model's own
+        # time cuts (a fixed 0-10 grid gave every subject the same risk whenever
+        # times were in days/months, i.e. Uno's C = 0.5 on real data).
         _, _, x_np = to_numpy(torch.zeros(x.shape[0]), torch.zeros(x.shape[0]), x)
         x_np = x_np.astype(np.float32)
         if self.interpolator is None:
             return as_output(np.zeros(x_np.shape[0]))
-        # Default median-approximation grid (will be interpolated to the
-        # observed-time support by ``interp_surv``).
-        grid = np.linspace(1e-3, 10.0, 200)
         surv_df = self.interpolator.predict_surv_df(x_np)
-        surv = interp_surv(surv_df.index.to_numpy(), surv_df.to_numpy(), grid)
-        # searchsorted returns len(grid) when survival never drops to 0.5 within
-        # the grid (long survivors); clip so the median falls back to grid.max().
-        idx = [np.clip(np.searchsorted(1.0 - s, 0.5), 0, len(grid) - 1) for s in surv.T]
-        medians = grid[idx]
-        return as_output(-medians)
+        return as_output(-_median_from_curves(surv_df.index.to_numpy(dtype=np.float64), surv_df.to_numpy(dtype=np.float64)))

@@ -219,3 +219,35 @@ def test_saved_predictions_reproduce_the_metrics(tmp_path):
     assert np.isclose(integrated_brier_score(torch.tensor(p["surv"]), torch.tensor(p["grid"]), t, d, tau=tau), row["ibs"], atol=1e-6)
     assert np.isclose(d_calibration(torch.tensor(p["s_at_obs"]), d).statistic, row["dcal_stat"], atol=1e-5)
     assert np.isclose(ici(torch.tensor(p["s_at_tau"]), t, d, tau=tau), row["ici"], atol=1e-6)
+
+
+# ------------------------------- DeepHit risk score must not depend on a fixed 0-10 time grid
+def test_median_from_curves_interpolates_and_orders_long_survivors():
+    from flowsurv.baselines.deep import _median_from_curves
+
+    times = np.array([100.0, 200.0, 300.0, 400.0])
+    surv = np.array(
+        [
+            [0.9, 0.6, 0.99, 0.95],
+            [0.7, 0.4, 0.98, 0.90],
+            [0.4, 0.2, 0.97, 0.85],
+            [0.2, 0.1, 0.96, 0.80],
+        ]
+    )
+    med = _median_from_curves(times, surv)
+    assert np.isclose(med[0], 200.0 + 100.0 * (0.7 - 0.5) / (0.7 - 0.4))  # crosses 0.5 between t=200 and 300
+    assert np.isclose(med[1], 100.0 + 100.0 * (0.6 - 0.5) / (0.6 - 0.4))
+    # columns 2 and 3 never reach 0.5: beyond the last cut, ordered by S_last (0.96 > 0.80)
+    assert med[2] > med[3] > 400.0
+
+
+def test_deephit_risk_is_not_constant_when_times_are_in_days():
+    from flowsurv.baselines import DeepHit
+
+    t, d, x = _data(300)
+    t = t * 1000.0  # days-scale times: the old fixed grid (0-10) tied every subject
+    m = DeepHit()
+    res = m.fit(t, d, x, seed=0, max_epochs=5, hidden=16, n_blocks=1, num_durations=20)
+    assert res.converged
+    risk = torch.as_tensor(m.predict_risk(x)).numpy()
+    assert len(np.unique(risk)) > 10
